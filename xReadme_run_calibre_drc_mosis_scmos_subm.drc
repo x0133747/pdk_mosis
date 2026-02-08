@@ -1,0 +1,5 @@
+To use this deck:
+Save as mosis_scmos_subm.drc
+Modify LAYOUT PATH to point to your GDS file
+Modify LAYOUT PRIMARY to your top cell name
+Run with: calibre -drc -hier mosis_scmos_subm.drc (hierarchical) or remove -hier for flat mode

@@ -1,0 +1,4228 @@
+import streamlit as st
+import gdspy
+import tempfile
+import os
+import subprocess
+import platform
+import shutil
+from datetime import datetime
+import pandas as pd
+import base64
+from io import StringIO, BytesIO
+import matplotlib.pyplot as plt
+import matplotlib.patches as patches
+from matplotlib.patches import Rectangle, FancyBboxPatch
+import numpy as np
+
+# Configure Streamlit page
+st.set_page_config(
+    page_title="MOSIS_SCMOS PDK PV Automation QA & Validation Dashboard",
+    page_icon="🔧",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
+# Custom CSS for professional appearance
+st.markdown(
+    """
+<style>
+    .main-header {
+        font-size: 2.5rem;
+        font-weight: bold;
+        color: #1f77b4;
+        text-align: center;
+        margin-bottom: 2rem;
+    }
+    .viewer-btn {
+        background-color: #4CAF50;
+        color: white;
+        padding: 10px 24px;
+        margin: 5px;
+        border: none;
+        border-radius: 4px;
+        cursor: pointer;
+        font-weight: bold;
+    }
+    .calibre-btn {
+        background-color: #2196F3;
+        color: white;
+        padding: 10px 24px;
+        margin: 5px;
+        border: none;
+        border-radius: 4px;
+        cursor: pointer;
+        font-weight: bold;
+    }
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 24px;
+    }
+    .stTabs [data-baseweb="tab"] {
+        height: 50px;
+        padding-top: 10px;
+        padding-bottom: 10px;
+        background-color: #f0f2f6;
+        border-radius: 4px;
+    }
+    .drc-rule {
+        background-color: #f9f9f9;
+        padding: 10px;
+        border-left: 3px solid #1f77b4;
+        margin: 5px 0;
+        font-family: monospace;
+        font-size: 0.9rem;
+    }
+    .error-cell {
+        background-color: #fff3cd;
+        border-left: 3px solid #ffc107;
+        padding: 10px;
+        margin: 5px 0;
+    }
+    .info-box {
+        background-color: #e3f2fd;
+        padding: 15px;
+        border-radius: 5px;
+        border-left: 4px solid #2196F3;
+        margin: 10px 0;
+    }
+</style>
+""",
+    unsafe_allow_html=True,
+)
+
+# Initialize session state
+if "generated_gds" not in st.session_state:
+    st.session_state.generated_gds = None
+if "calibre_deck" not in st.session_state:
+    st.session_state.calibre_deck = None
+if "gds_filepath" not in st.session_state:
+    st.session_state.gds_filepath = None
+
+# MOSIS SCMOS Layer Mapping (from PDF)
+LAYER_MAP = {
+    "N_WELL": (42, "CWN"),
+    "ACTIVE": (43, "CAA"),
+    "POLY": (46, "CPG"),
+    "N_PLUS_SELECT": (45, "CSN"),
+    "P_PLUS_SELECT": (44, "CSP"),
+    "POLY2": (56, "CP2"),
+    "HI_RES_IMPLANT": (34, "CHR"),
+    "CONTACT": (25, "CCC"),
+    "POLY_CONTACT": (47, "CCP"),
+    "ACTIVE_CONTACT": (48, "CCA"),
+    "POLY2_CONTACT": (55, "CCE"),
+    "METAL1": (49, "CM1"),
+    "VIA": (50, "CV1"),
+    "METAL2": (51, "CM2"),
+    "VIA2": (61, "CV2"),
+    "METAL3": (62, "CM3"),
+    "GLASS": (52, "COG"),
+    "PADS": (26, "XP"),
+}
+
+# Design Rules Database (extracted from PDF)
+DESIGN_RULES = {
+    "N_WELL": {
+        "1.1": {"desc": "Minimum width", "value": 12, "type": "width"},
+        "1.2": {
+            "desc": "Minimum spacing between wells at different potential",
+            "value": 18,
+            "type": "spacing",
+        },
+        "1.3": {
+            "desc": "Minimum spacing between wells at same potential",
+            "value": 6,
+            "type": "spacing",
+        },
+        "1.4": {
+            "desc": "Minimum spacing between wells of different type",
+            "value": 0,
+            "type": "spacing",
+        },
+    },
+    "ACTIVE": {
+        "2.1": {"desc": "Minimum width", "value": 3, "type": "width"},
+        "2.2": {"desc": "Minimum spacing", "value": 3, "type": "spacing"},
+        "2.3": {
+            "desc": "Source/drain active to well edge",
+            "value": 6,
+            "type": "spacing",
+        },
+        "2.4": {
+            "desc": "Substrate/well contact active to well edge",
+            "value": 3,
+            "type": "spacing",
+        },
+        "2.5": {
+            "desc": "Minimum spacing between active of different implant",
+            "value": 4,
+            "type": "spacing",
+        },
+    },
+    "POLY": {
+        "3.1": {"desc": "Minimum width", "value": 2, "type": "width"},
+        "3.2": {"desc": "Minimum spacing over field", "value": 3, "type": "spacing"},
+        "3.2a": {"desc": "Minimum spacing over active", "value": 3, "type": "spacing"},
+        "3.3": {
+            "desc": "Minimum gate extension of active",
+            "value": 2,
+            "type": "extension",
+        },
+        "3.4": {
+            "desc": "Minimum active extension of poly",
+            "value": 3,
+            "type": "extension",
+        },
+        "3.5": {"desc": "Minimum field poly to active", "value": 1, "type": "spacing"},
+    },
+    "SELECT": {
+        "4.1": {
+            "desc": "Minimum select spacing to channel",
+            "value": 3,
+            "type": "spacing",
+        },
+        "4.2": {
+            "desc": "Minimum select overlap of active",
+            "value": 2,
+            "type": "overlap",
+        },
+        "4.3": {
+            "desc": "Minimum select overlap of contact",
+            "value": 1,
+            "type": "overlap",
+        },
+        "4.4": {
+            "desc": "Minimum select width and spacing",
+            "value": 2,
+            "type": "width",
+        },
+    },
+    "CONTACT": {
+        "6.1": {"desc": "Exact contact size", "value": 2, "type": "size"},
+        "6.2": {"desc": "Minimum active overlap", "value": 1.5, "type": "overlap"},
+        "6.3": {"desc": "Minimum contact spacing", "value": 3, "type": "spacing"},
+        "6.4": {
+            "desc": "Minimum spacing to gate of transistor",
+            "value": 2,
+            "type": "spacing",
+        },
+    },
+    "POLY_CONTACT": {
+        "5.1": {"desc": "Exact contact size", "value": 2, "type": "size"},
+        "5.2": {"desc": "Minimum poly overlap", "value": 1.5, "type": "overlap"},
+        "5.3": {"desc": "Minimum contact spacing", "value": 3, "type": "spacing"},
+        "5.4": {
+            "desc": "Minimum spacing to gate of transistor",
+            "value": 2,
+            "type": "spacing",
+        },
+    },
+    "METAL1": {
+        "7.1": {"desc": "Minimum width", "value": 3, "type": "width"},
+        "7.2": {"desc": "Minimum spacing", "value": 3, "type": "spacing"},
+        "7.3": {
+            "desc": "Minimum overlap of any contact",
+            "value": 1,
+            "type": "overlap",
+        },
+        "7.4": {
+            "desc": "Minimum spacing when wide (>10λ)",
+            "value": 6,
+            "type": "spacing",
+        },
+    },
+    "VIA": {
+        "8.1": {"desc": "Exact size", "value": 2, "type": "size"},
+        "8.2": {"desc": "Minimum spacing", "value": 3, "type": "spacing"},
+        "8.3": {"desc": "Minimum overlap by metal1", "value": 1, "type": "overlap"},
+    },
+    "METAL2": {
+        "9.1": {"desc": "Minimum width", "value": 3, "type": "width"},
+        "9.2": {"desc": "Minimum spacing", "value": 3, "type": "spacing"},
+        "9.3": {"desc": "Minimum overlap of via1", "value": 1, "type": "overlap"},
+        "9.4": {
+            "desc": "Minimum spacing when wide (>10λ)",
+            "value": 6,
+            "type": "spacing",
+        },
+    },
+    "POLY2_CAP": {
+        "11.1": {"desc": "Minimum width", "value": 5, "type": "width"},
+        "11.2": {"desc": "Minimum spacing", "value": 3, "type": "spacing"},
+        "11.3": {"desc": "Minimum poly overlap", "value": 2, "type": "overlap"},
+    },
+    "METAL3": {
+        "15.1": {"desc": "Minimum width", "value": 6, "type": "width"},
+        "15.2": {"desc": "Minimum spacing", "value": 3, "type": "spacing"},
+        "15.3": {"desc": "Minimum overlap of via2", "value": 1, "type": "overlap"},
+    },
+}
+
+
+def launch_gds_viewer(viewer_type, gds_data):
+    """
+    Launch external GDS viewer with the generated file
+    viewer_type: 'klayout', 'calibredrv', or 'k2_viewer'
+    """
+    try:
+        # Check if executable exists in PATH
+        executable_map = {
+            "klayout": "klayout",
+            "calibredrv": "calibredrv",
+            "k2_viewer": "k2_viewer",
+        }
+
+        if viewer_type in executable_map:
+            executable = executable_map[viewer_type]
+            if shutil.which(executable) is None:
+                return (
+                    False,
+                    f"Error: {executable} not found in PATH. Please ensure {viewer_type} is installed and accessible.",
+                )
+        else:
+            return False, f"Unknown viewer type: {viewer_type}"
+
+        # Create temp file with proper extension
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        temp_dir = tempfile.gettempdir()
+        gds_path = os.path.join(temp_dir, f"QA_Error_Cells_{timestamp}.gds")
+
+        # Write GDS data to temp file
+        with open(gds_path, "wb") as f:
+            f.write(gds_data)
+
+        # Store path in session for future reference
+        st.session_state.gds_filepath = gds_path
+
+        # Determine command based on OS and viewer type
+        system = platform.system()
+
+        if viewer_type == "klayout":
+            if system == "Windows":
+                cmd = f'klayout "{gds_path}"'
+            else:  # Linux/Mac
+                cmd = f'klayout "{gds_path}" &'
+        elif viewer_type == "calibredrv":
+            if system == "Windows":
+                cmd = f'calibredrv "{gds_path}"'
+            else:
+                cmd = f'calibredrv "{gds_path}" &'
+        elif viewer_type == "k2_viewer":
+            if system == "Windows":
+                cmd = f'k2_viewer "{gds_path}"'
+            else:
+                cmd = f'k2_viewer "{gds_path}" &'
+        else:
+            return False, f"Unknown viewer type: {viewer_type}"
+
+        # Execute command
+        if system == "Windows":
+            subprocess.Popen(cmd, shell=True)
+        else:
+            subprocess.Popen(
+                cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+            )
+
+        return True, f"Launched {viewer_type} with {gds_path}"
+
+    except Exception as e:
+        return False, f"Error launching {viewer_type}: {str(e)}"
+
+
+# ============== APP 1: QA ERROR CELL GENERATOR ==============
+
+
+def create_error_cell(lib, rule_category, rule_id, rule_info, lambda_val=1.0):
+    """
+    Generate a GDS cell with intentional DRC violation
+    Returns: gdspy.Cell object
+    """
+    cell_name = f"ERR_{rule_category}_{rule_id.replace('.', '_')}"
+
+    # Check if cell already exists
+    if cell_name in lib.cells:
+        return lib.cells[cell_name]
+
+    cell = lib.new_cell(cell_name)
+
+    violation_value = (
+        rule_info["value"] - 0.5
+    )  # Intentional violation (0.5 lambda less)
+    if violation_value < 0.5:
+        violation_value = rule_info["value"] - 0.1
+
+    try:
+        if rule_category == "N_WELL":
+            layer = LAYER_MAP["N_WELL"][0]
+            if rule_info["type"] == "width":
+                cell.add(
+                    gdspy.Rectangle(
+                        (0, 0),
+                        (violation_value * lambda_val, 20 * lambda_val),
+                        layer=layer,
+                    )
+                )
+                cell.add(
+                    gdspy.Text(
+                        f"ERR: {rule_id}",
+                        2 * lambda_val,
+                        (0, 22 * lambda_val),
+                        layer=layer,
+                    )
+                )
+            elif rule_info["type"] == "spacing":
+                cell.add(
+                    gdspy.Rectangle(
+                        (0, 0), (10 * lambda_val, 10 * lambda_val), layer=layer
+                    )
+                )
+                cell.add(
+                    gdspy.Rectangle(
+                        (10 * lambda_val + violation_value * lambda_val, 0),
+                        (
+                            20 * lambda_val + violation_value * lambda_val,
+                            10 * lambda_val,
+                        ),
+                        layer=layer,
+                    )
+                )
+
+        elif rule_category == "ACTIVE":
+            layer = LAYER_MAP["ACTIVE"][0]
+            if rule_info["type"] == "width":
+                cell.add(
+                    gdspy.Rectangle(
+                        (0, 0),
+                        (violation_value * lambda_val, 10 * lambda_val),
+                        layer=layer,
+                    )
+                )
+            elif rule_info["type"] == "spacing":
+                cell.add(
+                    gdspy.Rectangle(
+                        (0, 0), (5 * lambda_val, 5 * lambda_val), layer=layer
+                    )
+                )
+                cell.add(
+                    gdspy.Rectangle(
+                        (5 * lambda_val + violation_value * lambda_val, 0),
+                        (
+                            10 * lambda_val + violation_value * lambda_val,
+                            5 * lambda_val,
+                        ),
+                        layer=layer,
+                    )
+                )
+
+        elif rule_category == "POLY":
+            layer = LAYER_MAP["POLY"][0]
+            if rule_info["type"] == "width":
+                cell.add(
+                    gdspy.Rectangle(
+                        (0, 0),
+                        (20 * lambda_val, violation_value * lambda_val),
+                        layer=layer,
+                    )
+                )
+            elif rule_info["type"] == "spacing":
+                cell.add(
+                    gdspy.Rectangle(
+                        (0, 0), (10 * lambda_val, 2 * lambda_val), layer=layer
+                    )
+                )
+                cell.add(
+                    gdspy.Rectangle(
+                        (0, 2 * lambda_val + violation_value * lambda_val),
+                        (
+                            10 * lambda_val,
+                            4 * lambda_val + violation_value * lambda_val,
+                        ),
+                        layer=layer,
+                    )
+                )
+            elif rule_info["type"] == "extension":
+                active_layer = LAYER_MAP["ACTIVE"][0]
+                cell.add(
+                    gdspy.Rectangle(
+                        (0, 0), (10 * lambda_val, 5 * lambda_val), layer=active_layer
+                    )
+                )
+                cell.add(
+                    gdspy.Rectangle(
+                        (2 * lambda_val, 0),
+                        (8 * lambda_val, 5 * lambda_val),
+                        layer=layer,
+                    )
+                )
+
+        elif rule_category in ["CONTACT", "POLY_CONTACT"]:
+            layer = LAYER_MAP["CONTACT"][0]
+            if rule_info["type"] == "size":
+                cell.add(
+                    gdspy.Rectangle(
+                        (0, 0),
+                        (violation_value * lambda_val, violation_value * lambda_val),
+                        layer=layer,
+                    )
+                )
+                if rule_category == "CONTACT":
+                    active_layer = LAYER_MAP["ACTIVE"][0]
+                    cell.add(
+                        gdspy.Rectangle(
+                            (-lambda_val, -lambda_val),
+                            (
+                                violation_value * lambda_val + lambda_val,
+                                violation_value * lambda_val + lambda_val,
+                            ),
+                            layer=active_layer,
+                        )
+                    )
+            elif rule_info["type"] == "overlap":
+                active_layer = LAYER_MAP["ACTIVE"][0]
+                contact_size = 2 * lambda_val
+                cell.add(
+                    gdspy.Rectangle((0, 0), (contact_size, contact_size), layer=layer)
+                )
+                cell.add(
+                    gdspy.Rectangle(
+                        (
+                            -violation_value * lambda_val / 2,
+                            -violation_value * lambda_val / 2,
+                        ),
+                        (
+                            contact_size + violation_value * lambda_val / 2,
+                            contact_size + violation_value * lambda_val / 2,
+                        ),
+                        layer=active_layer,
+                    )
+                )
+
+        elif rule_category in ["METAL1", "METAL2", "METAL3"]:
+            layer_map = {
+                "METAL1": LAYER_MAP["METAL1"][0],
+                "METAL2": LAYER_MAP["METAL2"][0],
+                "METAL3": LAYER_MAP["METAL3"][0],
+            }
+            layer = layer_map[rule_category]
+
+            if rule_info["type"] == "width":
+                cell.add(
+                    gdspy.Rectangle(
+                        (0, 0),
+                        (20 * lambda_val, violation_value * lambda_val),
+                        layer=layer,
+                    )
+                )
+            elif rule_info["type"] == "spacing":
+                cell.add(
+                    gdspy.Rectangle(
+                        (0, 0), (10 * lambda_val, 3 * lambda_val), layer=layer
+                    )
+                )
+                cell.add(
+                    gdspy.Rectangle(
+                        (10 * lambda_val + violation_value * lambda_val, 0),
+                        (
+                            20 * lambda_val + violation_value * lambda_val,
+                            3 * lambda_val,
+                        ),
+                        layer=layer,
+                    )
+                )
+            elif rule_info["type"] == "overlap":
+                via_layer = (
+                    LAYER_MAP["VIA"][0]
+                    if rule_category == "METAL1"
+                    else LAYER_MAP["VIA2"][0]
+                )
+                via_size = 2 * lambda_val
+                cell.add(gdspy.Rectangle((0, 0), (via_size, via_size), layer=via_layer))
+                cell.add(
+                    gdspy.Rectangle(
+                        (-violation_value * lambda_val, -violation_value * lambda_val),
+                        (
+                            via_size + violation_value * lambda_val,
+                            via_size + violation_value * lambda_val,
+                        ),
+                        layer=layer,
+                    )
+                )
+    except Exception as e:
+        st.warning(
+            f"Could not generate error cell for {rule_category} {rule_id}: {str(e)}"
+        )
+
+    return cell
+
+
+def qa_generator_app():
+    st.markdown("### 🔍 Pass/Fail Error Cells QA Generator")
+    st.markdown(
+        "Generate GDSII test structures with intentional DRC violations for QA validation"
+    )
+
+    col1, col2 = st.columns([1, 2])
+
+    with col1:
+        st.subheader("Configuration")
+        lambda_val = st.number_input(
+            "Lambda (μm)",
+            min_value=0.1,
+            max_value=10.0,
+            value=0.5,
+            step=0.1,
+            key="qa_lambda",
+        )
+
+        st.markdown("#### Select Rules to Violate")
+
+        selected_errors = []
+        for category, rules in DESIGN_RULES.items():
+            with st.expander(f"{category} Rules"):
+                for rule_id, rule_info in rules.items():
+                    if st.checkbox(
+                        f"{rule_id}: {rule_info['desc']} ({rule_info['value']}λ)",
+                        key=f"chk_{category}_{rule_id}",
+                    ):
+                        selected_errors.append((category, rule_id, rule_info))
+
+        generate_btn = st.button(
+            "Generate Error Cell Library",
+            type="primary",
+            disabled=len(selected_errors) == 0,
+        )
+
+        if generate_btn:
+            with st.spinner("Generating GDSII with intentional DRC errors..."):
+                try:
+                    lib = gdspy.GdsLibrary()
+
+                    # Create top cell
+                    top_cell = lib.new_cell("TOP_QA_ERRORS")
+                    y_offset = 0
+
+                    for category, rule_id, rule_info in selected_errors:
+                        error_cell = create_error_cell(
+                            lib, category, rule_id, rule_info, lambda_val
+                        )
+                        top_cell.add(gdspy.CellReference(error_cell, (0, y_offset)))
+                        y_offset += 50 * lambda_val
+
+                    gds_writer = BytesIO()
+                    lib.write_gds(gds_writer)
+                    st.session_state.generated_gds = gds_writer.getvalue()
+                    st.session_state.selected_errors = selected_errors
+                    st.success(f"Generated {len(selected_errors)} error cells!")
+                except Exception as e:
+                    st.error(f"Error generating GDS: {str(e)}")
+                    st.info("Make sure you have installed: pip install gdspy")
+
+    with col2:
+        st.subheader("Preview & Download")
+
+        if st.session_state.generated_gds:
+            if "selected_errors" in st.session_state:
+                st.markdown("#### Generated Cells Summary")
+                summary_data = []
+                for cat, rid, info in st.session_state.selected_errors:
+                    summary_data.append(
+                        {
+                            "Category": cat,
+                            "Rule": rid,
+                            "Description": info["desc"],
+                            "Nominal": f"{info['value']}λ",
+                            "Violated": f"{info['value'] - 0.5}λ",
+                        }
+                    )
+
+                df = pd.DataFrame(summary_data)
+                st.dataframe(df, use_container_width=True)
+
+            # GDS VIEWER SECTION
+            st.markdown("#### GDS Viewer")
+
+            col_klayout, col_calibre, col_quickview = st.columns(3)
+
+            with col_klayout:
+                if st.button(
+                    "🔍 Open in KLayout", key="btn_klayout", use_container_width=True
+                ):
+                    success, msg = launch_gds_viewer(
+                        "klayout", st.session_state.generated_gds
+                    )
+                    if success:
+                        st.success("KLayout launched successfully!")
+                        st.info(f"File: {st.session_state.gds_filepath}")
+                    else:
+                        st.error(msg)
+                        st.info(
+                            "Make sure KLayout is installed and in your system PATH"
+                        )
+
+            with col_calibre:
+                if st.button(
+                    "📐 Open in CalibreDRV",
+                    key="btn_calibredrv",
+                    use_container_width=True,
+                ):
+                    success, msg = launch_gds_viewer(
+                        "calibredrv", st.session_state.generated_gds
+                    )
+                    if success:
+                        st.success("CalibreDRV launched successfully!")
+                        st.info(f"File: {st.session_state.gds_filepath}")
+                    else:
+                        st.error(msg)
+                        st.info(
+                            "Make sure CalibreDRV is installed and in your system PATH"
+                        )
+
+            with col_quickview:
+                if st.button(
+                    "👁️ Open in QuickView",
+                    key="btn_quickview",
+                    use_container_width=True,
+                ):
+                    success, msg = launch_gds_viewer(
+                        "k2_viewer", st.session_state.generated_gds
+                    )
+                    if success:
+                        st.success("QuickView launched successfully!")
+                        st.info(f"File: {st.session_state.gds_filepath}")
+                    else:
+                        st.error(msg)
+                        st.info(
+                            "Make sure k2_viewer is installed and in your system PATH"
+                        )
+
+            # Alternative download option
+            with st.expander("💾 Download GDS File"):
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                st.download_button(
+                    label="Download QA_Error_Cells.gds",
+                    data=st.session_state.generated_gds,
+                    file_name=f"QA_Error_Cells_{timestamp}.gds",
+                    mime="application/octet-stream",
+                )
+
+            # Info box about local execution
+            st.markdown(
+                """
+            <div class="info-box">
+                <strong>Note:</strong> GDS viewers launch on the <em>server machine</em> where this Streamlit app is running.
+                For cloud deployments, use the Download option instead.
+            </div>
+            """,
+                unsafe_allow_html=True,
+            )
+
+            st.info(
+                "💡 All cells contain intentional DRC violations and should FAIL DRC checks."
+            )
+        else:
+            st.info("Select rules and click 'Generate' to create error cells")
+
+
+# ============== APP 2: CALIBRE DRC DECK GENERATOR ==============
+
+
+def generate_calibre_deck(lambda_val=1.0, categories=None):
+    """Generate Siemens Calibre DRC rule deck in SVRF format"""
+
+    # If no categories specified, use all available categories
+    if categories is None:
+        categories = list(DESIGN_RULES.keys())
+
+    lines = []
+    lines.append("////////////////////////////////////////////////////////")
+    lines.append("// MOSIS SCMOS SUBM Calibre DRC Rule Deck")
+    lines.append(f"// Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    lines.append(f"// Lambda: {lambda_val} μm")
+    lines.append(f"// Selected Categories: {', '.join(categories)}")
+    lines.append("////////////////////////////////////////////////////////")
+    lines.append("")
+
+    # Include statements and setup
+    lines.append("LAYOUT SYSTEM GDSII")
+    lines.append('LAYOUT PRIMARY "TOP_QA_ERRORS"')
+    lines.append('LAYOUT PATH "QA_Error_Cells.gds"')
+    lines.append("DRC RESULTS DATABASE drc_results.db")
+    lines.append("DRC SUMMARY REPORT drc_summary.rep")
+    lines.append("")
+
+    # Layer definitions
+    lines.append("// Layer Definitions")
+    for layer_name, (gds_num, cif_name) in LAYER_MAP.items():
+        lines.append(f"LAYER {layer_name} {gds_num}")
+    lines.append("")
+
+    # Derived layers
+    lines.append("// Derived Layers")
+    lines.append("gate = POLY AND ACTIVE")
+    lines.append("channel = gate // Simplified")
+    lines.append("")
+
+    # DRC Rules - Using proper SVRF syntax with rule blocks
+    lines.append("////////////////////////////////////////////////////////")
+    lines.append("// SECTION 4: DESIGN RULE CHECKS")
+    lines.append(f"// All dimensions in microns (lambda = {lambda_val}um)")
+    lines.append("////////////////////////////////////////////////////////")
+    lines.append("")
+    lines.append(f"VARIABLE LAMBDA {lambda_val}")
+    lines.append("")
+
+    # Generate rules dynamically based on selected categories
+    for category in categories:
+        if category in DESIGN_RULES:
+            lines.append(
+                "// ------------------------------------------------------------"
+            )
+            lines.append(f"// {category} RULES")
+            lines.append(
+                "// ------------------------------------------------------------"
+            )
+            lines.append("")
+
+            for rule_id, rule_info in DESIGN_RULES[category].items():
+                desc = rule_info.get("desc", "")
+                val = rule_info.get("value", 0)
+                rule_type = rule_info.get("type", "")
+                layer = rule_info.get("layer", category)
+
+                # Skip rules with value 0 (not applicable)
+                if val == 0:
+                    continue
+
+                check_name = f"{category}_{rule_id.replace('.', '_')}"
+                dim = val * lambda_val
+
+                lines.append(f"{check_name} {{")
+                lines.append(
+                    f"  @ MOSIS Rule {rule_id}: {desc} ({val} lambda = {dim} um)"
+                )
+
+                # Generate SVRF operation based on type
+                if rule_type == "width":
+                    lines.append(
+                        f"  INTERNAL {layer} < {val} * LAMBDA ABUT < 90 SINGULAR"
+                    )
+                elif rule_type == "spacing":
+                    # Check if it mentions "different potential" or "same potential"
+                    if "different" in desc.lower() and "potential" in desc.lower():
+                        lines.append(
+                            f"  EXTERNAL {layer} < {val} * LAMBDA ABUT < 90 SINGULAR OPPOSITE"
+                        )
+                    else:
+                        lines.append(
+                            f"  EXTERNAL {layer} < {val} * LAMBDA ABUT < 90 SINGULAR"
+                        )
+                elif rule_type == "enclosure":
+                    layer1 = rule_info.get("layer1", layer)
+                    layer2 = rule_info.get("layer2", layer)
+                    lines.append(
+                        f"  ENCLOSURE {layer1} {layer2} < {val} * LAMBDA ABUT < 90 SINGULAR"
+                    )
+                elif rule_type == "extension":
+                    lines.append(
+                        f"  EXTERNAL {layer} < {val} * LAMBDA ABUT < 90 SINGULAR EXTENSION"
+                    )
+                elif rule_type == "overlap":
+                    lines.append(
+                        f"  OVERLAP {layer} < {val} * LAMBDA ABUT < 90 SINGULAR"
+                    )
+
+                lines.append("}")
+                lines.append("")
+
+    # Footer
+    lines.append(
+        "//////////////////////////////////////////////////////////////////////"
+    )
+    lines.append("// END OF RULE FILE")
+    lines.append(
+        "//////////////////////////////////////////////////////////////////////"
+    )
+    lines.append("")
+
+    return "\n".join(lines)
+
+
+def calibre_generator_app():
+    st.markdown("### 📜 Siemens Calibre DRC Rule Deck Generator")
+    st.markdown("Generate SVRF format DRC rule decks from MOSIS SCMOS design rules")
+
+    col1, col2 = st.columns([1, 2])
+
+    with col1:
+        st.subheader("Configuration")
+        lambda_val = st.number_input(
+            "Process Lambda (μm)",
+            min_value=0.1,
+            max_value=10.0,
+            value=0.5,
+            step=0.1,
+            key="cal_lambda",
+        )
+
+        st.markdown("#### Rule Categories")
+        include_all = st.checkbox("Include All Rules", value=True)
+
+        categories = []
+        if include_all:
+            categories = list(DESIGN_RULES.keys())
+            st.info("All categories selected")
+        else:
+            for cat in DESIGN_RULES.keys():
+                if st.checkbox(cat, value=True, key=f"cat_{cat}"):
+                    categories.append(cat)
+
+        if st.button("Generate Calibre Deck", type="primary"):
+            with st.spinner("Generating SVRF rule deck..."):
+                deck_content = generate_calibre_deck(lambda_val, categories)
+                st.session_state.calibre_deck = deck_content
+                st.success("Rule deck generated successfully!")
+
+    with col2:
+        st.subheader("Generated Rule Deck")
+
+        if st.session_state.calibre_deck:
+            st.code(st.session_state.calibre_deck, language="text")
+
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            st.download_button(
+                label="📥 Download Calibre DRC Deck (.svrf)",
+                data=st.session_state.calibre_deck,
+                file_name=f"mosis_scmos_drc_{timestamp}.svrf",
+                mime="text/plain",
+            )
+
+            st.markdown("#### Validation Checklist")
+            st.markdown("""
+            - [ ] Verify layer numbers match your PDK
+            - [ ] Check lambda scaling for your process node
+            - [ ] Review ERROR vs WARNING message classifications
+            - [ ] Validate derived layer operations
+            """)
+        else:
+            st.info("Configure parameters and click 'Generate' to create rule deck")
+
+            with st.expander("Preview SVRF Format"):
+                example = """
+LAYER N_WELL 42
+LAYER ACTIVE 43
+LAYER POLY 46
+
+NW_WIDTH = N_WELL WIDTH < 6 SERIOUS
+ACT_SPACE = ACTIVE SEPARATION < 1.5 SERIOUS
+                """
+                st.code(example, language="text")
+
+    st.markdown("---")
+
+    # SVRF Reference Manual Section
+    st.markdown("### 📖 Calibre SVRF User Reference Manual")
+    st.markdown(
+        "Standard Verification Rule Format (SVRF) Reference Manual for Calibre DRC"
+    )
+
+    # SVRF PDF file path
+    svrf_pdf_path = (
+        "/applications/Siemens/Calibre/docs_cal_2024.2_18.9/docs/pdfdocs/svrf_ur.pdf"
+    )
+
+    col3, col4 = st.columns([2, 1])
+
+    with col3:
+        st.markdown("#### PDF Document Path")
+        st.text_input(
+            "Full path to Calibre SVRF Manual",
+            value=svrf_pdf_path,
+            disabled=True,
+            help="Location of the Calibre SVRF User Reference PDF document",
+        )
+
+    with col4:
+        st.markdown("#### View Document")
+        if st.button("📄 View Calibre SVRF", type="primary", use_container_width=True):
+            if os.path.exists(svrf_pdf_path):
+                if shutil.which("evince"):
+                    try:
+                        cmd = f'evince "{svrf_pdf_path}" &'
+                        subprocess.Popen(
+                            cmd,
+                            shell=True,
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                        )
+                        st.success("Calibre SVRF Manual opened in evince!")
+                    except Exception as e:
+                        st.error(f"Error opening PDF: {str(e)}")
+                else:
+                    st.error("evince PDF viewer not found in PATH.")
+                    st.info("Please install evince: sudo apt-get install evince")
+            else:
+                st.error(f"PDF file not found: {svrf_pdf_path}")
+                st.info(
+                    "Please ensure the svrf_ur.pdf file is at the specified location."
+                )
+
+    # Standard Basis Rules Summary
+    st.markdown("### 📋 Standard Basis Rules Summary")
+
+    with st.expander("📐 Basic SVRF Rule Types", expanded=True):
+        st.markdown("""
+        #### WIDTH Rules
+        - **Purpose**: Measure the minimum width of a layer
+        - **Syntax**: `INTERNAL layer < value [ABUT < angle] [SINGULAR]`
+        - **Example**: `INTERNAL POLY < 2.0` - checks poly minimum width is 2.0 μm
+        - **Common Use**: Metal width, poly width, active area width checks
+        
+        #### SPACE Rules
+        - **Purpose**: Measure the minimum spacing between layers
+        - **Syntax**: `EXTERNAL layer < value [ABUT < angle] [SINGULAR] [OPPOSITE]`
+        - **Example**: `EXTERNAL METAL1 < 3.0` - checks metal1 minimum spacing is 3.0 μm
+        - **Common Use**: Metal spacing, poly spacing, well spacing checks
+        - **Note**: Use `OPPOSITE` for different potential checks (e.g., wells)
+        
+        #### ENCLOSURE Rules
+        - **Purpose**: Measure how much one layer encloses another
+        - **Syntax**: `ENCLOSURE layer1 layer2 < value [ABUT < angle] [SINGULAR]`
+        - **Example**: `ENCLOSURE METAL1 VIA < 1.0` - checks metal1 overlaps via by 1.0 μm
+        - **Common Use**: Contact overlap, via enclosure, implant overlap checks
+        """)
+
+    with st.expander("⚙️ SVRF Syntax Quick Reference"):
+        st.markdown("""
+        #### Common SVRF Operations
+        
+        **Layer Operations:**
+        - `layer1 AND layer2` - Boolean AND of two layers
+        - `layer1 OR layer2` - Boolean OR of two layers
+        - `layer1 NOT layer2` - Boolean NOT (layer1 minus layer2)
+        - `layer1 XOR layer2` - Boolean XOR
+        
+        **Dimensional Checks:**
+        - `WIDTH layer < value` - Check minimum width
+        - `SPACING layer < value` - Check minimum spacing  
+        - `ENCLOSURE layer1 layer2 < value` - Check enclosure
+        - `EXTENSION layer < value` - Check extension
+        
+        **Keywords:**
+        - `ABUT < 90` - Consider edges meeting at less than 90 degrees
+        - `SINGULAR` - Include singular results
+        - `OPPOSITE` - Check opposite potential wells
+        - `EXTENSION` - Include extension violations
+        """)
+
+    st.markdown("---")
+
+    # Calibre Verification User's Manual Section
+    st.markdown("### 📖 Calibre Verification User's Manual")
+    st.markdown("Comprehensive Guide for Calibre Verification Operations and Commands")
+
+    # Verification User PDF file path
+    ver_user_pdf_path = "/applications/Siemens/Calibre/docs_cal_2024.2_18.9/docs/pdfdocs/calbr_ver_user.pdf"
+
+    col5, col6 = st.columns([2, 1])
+
+    with col5:
+        st.markdown("#### PDF Document Path")
+        st.text_input(
+            "Full path to Calibre Verification Manual",
+            value=ver_user_pdf_path,
+            disabled=True,
+            help="Location of the Calibre Verification User Manual PDF document",
+        )
+
+    with col6:
+        st.markdown("#### View Document")
+        if st.button(
+            "📄 View Calibre Verification User's Manual",
+            type="primary",
+            use_container_width=True,
+        ):
+            if os.path.exists(ver_user_pdf_path):
+                if shutil.which("evince"):
+                    try:
+                        cmd = f'evince "{ver_user_pdf_path}" &'
+                        subprocess.Popen(
+                            cmd,
+                            shell=True,
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                        )
+                        st.success("Calibre Verification Manual opened in evince!")
+                    except Exception as e:
+                        st.error(f"Error opening PDF: {str(e)}")
+                else:
+                    st.error("evince PDF viewer not found in PATH.")
+                    st.info("Please install evince: sudo apt-get install evince")
+            else:
+                st.error(f"PDF file not found: {ver_user_pdf_path}")
+                st.info(
+                    "Please ensure the calbr_ver_user.pdf file is at the specified location."
+                )
+
+    st.markdown("---")
+
+
+# ============== APP 3: CALIBRE LVS DECK GENERATOR ==============
+
+
+def calibre_lvs_generator_app():
+    """Calibre LVS Deck Generator - Generate LVS rule decks for SCMOS SUBM"""
+    st.markdown("### 🔍 Siemens Calibre LVS Rule Deck Generator")
+    st.markdown("Generate SVRF format LVS rule decks for MOSIS SCMOS SUBM technology")
+
+    # Initialize session state for LVS deck
+    if "lvs_deck" not in st.session_state:
+        st.session_state.lvs_deck = None
+
+    col1, col2 = st.columns([1, 2])
+
+    # Initialize session states
+    if "lvs_deck" not in st.session_state:
+        st.session_state.lvs_deck = None
+    if "lvs_test_gds" not in st.session_state:
+        st.session_state.lvs_test_gds = None
+
+    with col1:
+        st.subheader("Configuration")
+
+        st.markdown("#### Rule Deck Options")
+        include_passives = st.checkbox("Include Passive Devices", value=True)
+        include_transistors = st.checkbox("Include Transistors", value=True)
+        include_well_checks = st.checkbox("Include Well Checks", value=True)
+
+        st.markdown("---")
+        st.markdown("#### Test Layout Generation")
+        create_test_layouts = st.checkbox(
+            "Create test layout structures (GDS) for each device type",
+            value=False,
+            help="Generate GDSII test structures for NMOS, PMOS, resistors, and capacitors",
+        )
+
+        st.markdown("---")
+        if st.button("Generate LVS Deck", type="primary"):
+            with st.spinner("Generating LVS rule deck..."):
+                try:
+                    # Read the sample LVS rule file
+                    lvs_file_path = os.path.join(
+                        os.getcwd(), "scmos_lvs_passives.rules"
+                    )
+                    if os.path.exists(lvs_file_path):
+                        with open(lvs_file_path, "r") as f:
+                            lvs_content = f.read()
+                        st.session_state.lvs_deck = lvs_content
+                        st.success("LVS rule deck loaded successfully!")
+                    else:
+                        st.error(f"LVS rule file not found: {lvs_file_path}")
+
+                    # Generate test layouts if requested
+                    if create_test_layouts:
+                        lib = gdspy.GdsLibrary()
+                        top_cell = lib.new_cell("LVS_TEST_STRUCTURES")
+
+                        # Create test structures for each device type
+                        test_cells = []
+
+                        if include_transistors:
+                            # NMOS test structure
+                            nmos_cell = lib.new_cell("TEST_NMOS")
+                            # N-well layer
+                            nmos_cell.add(
+                                gdspy.Rectangle(
+                                    (-10, -10), (30, 30), layer=LAYER_MAP["N_WELL"][0]
+                                )
+                            )
+                            # Active area
+                            nmos_cell.add(
+                                gdspy.Rectangle(
+                                    (0, 0), (20, 20), layer=LAYER_MAP["ACTIVE"][0]
+                                )
+                            )
+                            # Gate poly
+                            nmos_cell.add(
+                                gdspy.Rectangle(
+                                    (8, -2), (12, 22), layer=LAYER_MAP["POLY"][0]
+                                )
+                            )
+                            # N+ select
+                            nmos_cell.add(
+                                gdspy.Rectangle(
+                                    (-2, -2),
+                                    (22, 22),
+                                    layer=LAYER_MAP["N_PLUS_SELECT"][0],
+                                )
+                            )
+                            # Contacts
+                            nmos_cell.add(
+                                gdspy.Rectangle(
+                                    (3, 8), (7, 12), layer=LAYER_MAP["CONTACT"][0]
+                                )
+                            )
+                            nmos_cell.add(
+                                gdspy.Rectangle(
+                                    (15, 8), (19, 12), layer=LAYER_MAP["CONTACT"][0]
+                                )
+                            )
+                            # Metal1
+                            nmos_cell.add(
+                                gdspy.Rectangle(
+                                    (3, 8), (7, 12), layer=LAYER_MAP["METAL1"][0]
+                                )
+                            )
+                            nmos_cell.add(
+                                gdspy.Rectangle(
+                                    (15, 8), (19, 12), layer=LAYER_MAP["METAL1"][0]
+                                )
+                            )
+                            # Gate contact
+                            nmos_cell.add(
+                                gdspy.Rectangle(
+                                    (8, 24),
+                                    (12, 28),
+                                    layer=LAYER_MAP["POLY_CONTACT"][0],
+                                )
+                            )
+                            test_cells.append(("NMOS", nmos_cell))
+
+                            # PMOS test structure
+                            pmos_cell = lib.new_cell("TEST_PMOS")
+                            # P+ select
+                            pmos_cell.add(
+                                gdspy.Rectangle(
+                                    (0, 0), (20, 20), layer=LAYER_MAP["ACTIVE"][0]
+                                )
+                            )
+                            # Gate poly
+                            pmos_cell.add(
+                                gdspy.Rectangle(
+                                    (8, -2), (12, 22), layer=LAYER_MAP["POLY"][0]
+                                )
+                            )
+                            # P+ select
+                            pmos_cell.add(
+                                gdspy.Rectangle(
+                                    (-2, -2),
+                                    (22, 22),
+                                    layer=LAYER_MAP["P_PLUS_SELECT"][0],
+                                )
+                            )
+                            # Contacts
+                            pmos_cell.add(
+                                gdspy.Rectangle(
+                                    (3, 8), (7, 12), layer=LAYER_MAP["CONTACT"][0]
+                                )
+                            )
+                            pmos_cell.add(
+                                gdspy.Rectangle(
+                                    (15, 8), (19, 12), layer=LAYER_MAP["CONTACT"][0]
+                                )
+                            )
+                            test_cells.append(("PMOS", pmos_cell))
+
+                        if include_passives:
+                            # Poly Resistor test structure
+                            res_cell = lib.new_cell("TEST_POLY_RES")
+                            # Resistor body
+                            res_cell.add(
+                                gdspy.Rectangle(
+                                    (0, 0), (40, 2), layer=LAYER_MAP["POLY"][0]
+                                )
+                            )
+                            # Resistor heads
+                            res_cell.add(
+                                gdspy.Rectangle(
+                                    (-2, -2), (4, 4), layer=LAYER_MAP["POLY"][0]
+                                )
+                            )
+                            res_cell.add(
+                                gdspy.Rectangle(
+                                    (36, -2), (42, 4), layer=LAYER_MAP["POLY"][0]
+                                )
+                            )
+                            # Contacts
+                            res_cell.add(
+                                gdspy.Rectangle(
+                                    (0, -1), (2, 3), layer=LAYER_MAP["POLY_CONTACT"][0]
+                                )
+                            )
+                            res_cell.add(
+                                gdspy.Rectangle(
+                                    (38, -1),
+                                    (40, 3),
+                                    layer=LAYER_MAP["POLY_CONTACT"][0],
+                                )
+                            )
+                            test_cells.append(("POLY_RES", res_cell))
+
+                            # Poly-Poly Capacitor test structure
+                            cap_cell = lib.new_cell("TEST_POLY_POLY_CAP")
+                            # Bottom plate (POLY)
+                            cap_cell.add(
+                                gdspy.Rectangle(
+                                    (0, 0), (20, 20), layer=LAYER_MAP["POLY"][0]
+                                )
+                            )
+                            # Top plate (POLY2)
+                            cap_cell.add(
+                                gdspy.Rectangle(
+                                    (2, 2), (18, 18), layer=LAYER_MAP["POLY2"][0]
+                                )
+                            )
+                            # Contacts to bottom plate
+                            cap_cell.add(
+                                gdspy.Rectangle(
+                                    (-2, 8), (2, 12), layer=LAYER_MAP["POLY_CONTACT"][0]
+                                )
+                            )
+                            # Contacts to top plate
+                            cap_cell.add(
+                                gdspy.Rectangle(
+                                    (18, 8),
+                                    (22, 12),
+                                    layer=LAYER_MAP["POLY2_CONTACT"][0],
+                                )
+                            )
+                            test_cells.append(("POLY_POLY_CAP", cap_cell))
+
+                        # Place all test cells in top cell with spacing
+                        y_offset = 0
+                        for name, cell in test_cells:
+                            top_cell.add(gdspy.CellReference(cell, (0, y_offset)))
+                            # Add label
+                            label_cell = lib.new_cell(f"LABEL_{name}")
+                            label_cell.add(
+                                gdspy.Text(
+                                    name,
+                                    5,
+                                    (25, y_offset + 8),
+                                    layer=LAYER_MAP["METAL1"][0],
+                                )
+                            )
+                            top_cell.add(gdspy.CellReference(label_cell))
+                            y_offset += 50
+
+                        # Write GDS
+                        gds_writer = BytesIO()
+                        lib.write_gds(gds_writer)
+                        st.session_state.lvs_test_gds = gds_writer.getvalue()
+                        st.success(
+                            f"Generated {len(test_cells)} test layout structures!"
+                        )
+
+                except Exception as e:
+                    st.error(f"Error generating LVS deck or test layouts: {str(e)}")
+
+    with col2:
+        st.subheader("Generated LVS Rule Deck")
+
+        if st.session_state.lvs_deck:
+            st.code(st.session_state.lvs_deck, language="text")
+
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            st.download_button(
+                label="📥 Download Calibre LVS Deck (.rules)",
+                data=st.session_state.lvs_deck,
+                file_name=f"mosis_scmos_lvs_{timestamp}.rules",
+                mime="text/plain",
+            )
+
+            st.markdown("#### Validation Checklist")
+            st.markdown(
+                """
+            - [ ] Verify layer numbers match your PDK
+            - [ ] Check transistor device definitions
+            - [ ] Validate resistor body/head layers
+            - [ ] Confirm capacitor plate connectivity
+            - [ ] Review property extraction formulas
+            """
+            )
+        else:
+            st.info("Click 'Generate LVS Deck' to load the rule deck")
+
+            with st.expander("Preview LVS Format"):
+                example = """
+// Layer Definitions
+LAYER N_WELL 42
+LAYER ACTIVE 43
+LAYER POLY 46
+
+// Device Recognition
+DEVICE MN(NMOS) CHANNEL {
+    POLY(G)
+    NSD(S)
+    NSD(D)
+}
+
+// Property Extraction
+PROPERTY MN(NMOS) {
+    W = (2 * AREA(CHANNEL)) / PERIMETER(CHANNEL)
+    L = LENGTH(CHANNEL)
+}
+                """
+                st.code(example, language="text")
+
+    # Test Layout GDS Section (displayed below LVS rule deck if generated)
+    if st.session_state.lvs_test_gds:
+        st.markdown("---")
+        st.markdown("### 📐 Generated Test Layout Structures (GDS)")
+        st.markdown("GDSII test structures for LVS device verification")
+
+        # Summary of generated cells
+        st.markdown("#### Generated Device Test Cells")
+        st.markdown("""
+        - **TEST_NMOS**: NMOS transistor test structure with gate, source, drain, and bulk
+        - **TEST_PMOS**: PMOS transistor test structure  
+        - **TEST_POLY_RES**: Poly resistor with high-resistance body and contacted heads
+        - **TEST_POLY_POLY_CAP**: Poly-Poly capacitor with bottom and top plates
+        - **LVS_TEST_STRUCTURES**: Top cell containing all test structures
+        """)
+
+        # GDS Viewer buttons
+        st.markdown("#### GDS Viewer")
+        col_klayout, col_calibre, col_quickview = st.columns(3)
+
+        with col_klayout:
+            if st.button(
+                "🔍 Open in KLayout", key="btn_lvs_klayout", use_container_width=True
+            ):
+                success, msg = launch_gds_viewer(
+                    "klayout", st.session_state.lvs_test_gds
+                )
+                if success:
+                    st.success("KLayout launched successfully!")
+                else:
+                    st.error(msg)
+
+        with col_calibre:
+            if st.button(
+                "📐 Open in CalibreDRV",
+                key="btn_lvs_calibredrv",
+                use_container_width=True,
+            ):
+                success, msg = launch_gds_viewer(
+                    "calibredrv", st.session_state.lvs_test_gds
+                )
+                if success:
+                    st.success("CalibreDRV launched successfully!")
+                else:
+                    st.error(msg)
+
+        with col_quickview:
+            if st.button(
+                "👁️ Open in QuickView",
+                key="btn_lvs_quickview",
+                use_container_width=True,
+            ):
+                success, msg = launch_gds_viewer(
+                    "k2_viewer", st.session_state.lvs_test_gds
+                )
+                if success:
+                    st.success("QuickView launched successfully!")
+                else:
+                    st.error(msg)
+
+        # Download option
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        st.download_button(
+            label="💾 Download LVS Test Layouts (GDS)",
+            data=st.session_state.lvs_test_gds,
+            file_name=f"LVS_Test_Structures_{timestamp}.gds",
+            mime="application/octet-stream",
+            key="download_lvs_gds",
+        )
+
+        st.info(
+            "💡 Use these test structures to validate LVS rule deck extraction and device recognition."
+        )
+
+        st.markdown("---")
+
+        # Sample SPICE Netlist Format
+        st.markdown("### 📝 Sample SPICE Netlist Format")
+        st.markdown("Example schematic netlist for SCMOS LVS verification")
+
+        spice_example = """
+* Sample schematic for SCMOS LVS
+* Transistors
+MN1 drain gate source bulk NMOS W=2u L=0.5u
+MP1 drain gate source bulk PMOS W=4u L=0.5u
+
+* Capacitors
+C1 node1 node2 C_POLY_POLY 1.0p
+C2 node3 node4 C_MIM12 0.1p
+
+* Resistors  
+R1 node1 node2 R_POLY 10k
+R2 node3 node4 R_NDIFF 1k
+R3 node5 node6 R_NWELL 50k
+"""
+        st.code(spice_example, language="text")
+
+        st.markdown("#### SPICE Format Notes")
+        st.markdown("""
+        - **Device Prefix**: M for transistors, C for capacitors, R for resistors
+        - **Transistor Format**: `M<name> D G S B <model> W=<width> L=<length>`
+        - **Capacitor Format**: `C<name> node1 node2 <model> <value>`
+        - **Resistor Format**: `R<name> node1 node2 <model> <value>`
+        - **Units**: u (microns), p (pico), k (kilo-ohms)
+        - **Device Models**: Match the LVS rule deck DEVICE statements (NMOS, PMOS, C_POLY_POLY, R_POLY, etc.)
+        """)
+
+    st.markdown("---")
+
+    # LVS Basics Summary
+    st.markdown("### 📋 LVS Basic Operations Summary")
+
+    with st.expander("🔧 Device Recognition", expanded=True):
+        st.markdown(
+            """
+        #### DEVICE Statement
+        - **Purpose**: Define how to recognize devices from layout layers
+        - **Syntax**: `DEVICE name(type) seed_layer { layer(terminal) ... }`
+        - **Example**: 
+          ```
+          DEVICE MN(NMOS) NCH {
+              POLY(G)
+              NSD(S)
+              NSD(D)
+              P_WELL(B)
+          }
+          ```
+        
+        #### Key Components:
+        - **Seed Layer**: Layer that defines device location (e.g., channel)
+        - **Terminals**: Pins with their corresponding layers (G, S, D, B)
+        - **Bulk Terminal**: Substrate or well connection for isolation
+        """
+        )
+
+    with st.expander("⚡ Property Extraction"):
+        st.markdown(
+            """
+        #### PROPERTY Statement
+        - **Purpose**: Extract geometric and electrical properties from devices
+        - **Syntax**: `PROPERTY device_name { property = expression }`
+        
+        #### Common Properties:
+        - **W (Width)**: `W = (2 * AREA(seed)) / PERIMETER(seed)`
+        - **L (Length)**: `L = LENGTH(seed)`
+        - **R (Resistance)**: `R = Rsheet * (L / W)`
+        - **C (Capacitance)**: `C = AREA * Cox + PERIM * Cjsw`
+        
+        #### Built-in Functions:
+        - `AREA(layer)` - Calculate area of layer shapes
+        - `PERIMETER(layer)` - Calculate perimeter
+        - `LENGTH(layer)` - Measure length
+        - `WIDTH(layer)` - Measure width
+        """
+        )
+
+    with st.expander("🔗 Connectivity Extraction"):
+        st.markdown(
+            """
+        #### CONNECT Statement
+        - **Purpose**: Define vertical connections between layers
+        - **Syntax**: `CONNECT layer1 layer2 BY via_layer`
+        
+        #### Common Connections:
+        - **Via Connections**: `CONNECT METAL1 METAL2 BY VIA`
+        - **Contact Connections**: `CONNECT METAL1 POLY BY CONTACT`
+        - **Well Connections**: `CONNECT N_WELL PPLUS` (substrate contact)
+        
+        #### ATTACH Statement
+        - **Purpose**: Attach text labels to layers for net naming
+        - **Syntax**: `ATTACH text_layer metal_layer`
+        - **Example**: `ATTACH TEXT_M1 METAL1`
+        """
+        )
+
+    with st.expander("⚙️ LVS Comparison Settings"):
+        st.markdown(
+            """
+        #### LVS Control Statements
+        - `LVS COMPARE CASE YES` - Case-sensitive comparison
+        - `LVS COMPARE TOLERANCE R 0.05` - 5% tolerance for resistors
+        - `LVS COMPARE TOLERANCE C 0.10` - 10% tolerance for capacitors
+        
+        #### Hierarchy and Reduction:
+        - `LVS HIERARCHY YES` - Enable hierarchical comparison
+        - `LVS REDUCE PARALLEL YES` - Reduce parallel devices
+        - `LVS REDUCE SERIES YES` - Reduce series devices
+        
+        #### Reporting:
+        - `LVS REPORT "./lvs_report.rpt"` - Output report file
+        - `LVS REPORT MAXIMUM 1000` - Maximum errors to report
+        """
+        )
+
+    st.markdown("---")
+
+    # Calibre Verification User Manual Section
+    st.markdown("### 📖 Calibre Verification User Manual")
+    st.markdown("Reference Manual for Calibre LVS and Verification Operations")
+
+    # Calibre Verification PDF file path
+    calbr_ver_pdf_path = "/applications/Siemens/Calibre/docs_cal_2024.2_18.9/docs/pdfdocs/calbr_ver_user.pdf"
+
+    col3, col4 = st.columns([2, 1])
+
+    with col3:
+        st.markdown("#### PDF Document Path")
+        st.text_input(
+            "Full path to Calibre Verification Manual",
+            value=calbr_ver_pdf_path,
+            disabled=True,
+            help="Location of the Calibre Verification User Reference PDF document",
+        )
+
+    with col4:
+        st.markdown("#### View Document")
+        if st.button(
+            "📄 View Calibre Verification", type="primary", use_container_width=True
+        ):
+            if os.path.exists(calbr_ver_pdf_path):
+                if shutil.which("evince"):
+                    try:
+                        cmd = f'evince "{calbr_ver_pdf_path}" &'
+                        subprocess.Popen(
+                            cmd,
+                            shell=True,
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                        )
+                        st.success("Calibre Verification Manual opened in evince!")
+                    except Exception as e:
+                        st.error(f"Error opening PDF: {str(e)}")
+                else:
+                    st.error("evince PDF viewer not found in PATH.")
+                    st.info("Please install evince: sudo apt-get install evince")
+            else:
+                st.error(f"PDF file not found: {calbr_ver_pdf_path}")
+                st.info(
+                    "Please ensure the calbr_ver_user.pdf file is at the specified location."
+                )
+
+    st.markdown("---")
+
+
+# ============== APP 4: CALIBRE PEX/xRC DECK GENERATOR ==============
+
+
+def calibre_pex_generator_app():
+    """Calibre PEX/xRC Deck Generator - Generate parasitic extraction rule decks for SCMOS SUBM"""
+    st.markdown("### 🔬 Siemens Calibre PEX/xRC Rule Deck Generator")
+    st.markdown(
+        "Generate SVRF format parasitic extraction (PEX) rule decks for MOSIS SCMOS SUBM technology"
+    )
+
+    # Initialize session state for PEX deck
+    if "pex_deck" not in st.session_state:
+        st.session_state.pex_deck = None
+
+    col1, col2 = st.columns([1, 2])
+
+    with col1:
+        st.subheader("Configuration")
+
+        st.markdown("#### Extraction Type")
+        extraction_type = st.radio(
+            "Select Extraction Mode",
+            [
+                "R-only (Resistance)",
+                "C-only (Capacitance)",
+                "RC (Resistance + Capacitance)",
+                "RCC (R + C + Coupling)",
+            ],
+            index=2,
+        )
+
+        st.markdown("#### PEX Options")
+        include_resistance = st.checkbox("Extract Resistance", value=True)
+        include_capacitance = st.checkbox("Extract Capacitance", value=True)
+        include_coupling = st.checkbox("Extract Coupling Capacitance", value=False)
+        hierarchical_mode = st.checkbox("Hierarchical Extraction", value=True)
+
+        st.markdown("---")
+        if st.button("Generate PEX Deck", type="primary"):
+            with st.spinner("Generating PEX rule deck..."):
+                try:
+                    # Generate PEX rule deck content
+                    pex_content = generate_pex_deck(
+                        extraction_type,
+                        include_resistance,
+                        include_capacitance,
+                        include_coupling,
+                        hierarchical_mode,
+                    )
+                    st.session_state.pex_deck = pex_content
+                    st.success("PEX rule deck generated successfully!")
+                except Exception as e:
+                    st.error(f"Error generating PEX deck: {str(e)}")
+
+    with col2:
+        st.subheader("Generated PEX Rule Deck")
+
+        if st.session_state.pex_deck:
+            st.code(st.session_state.pex_deck, language="text")
+
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            st.download_button(
+                label="📥 Download Calibre PEX Deck (.svrf)",
+                data=st.session_state.pex_deck,
+                file_name=f"mosis_scmos_pex_{timestamp}.svrf",
+                mime="text/plain",
+            )
+
+            st.markdown("#### Validation Checklist")
+            st.markdown(
+                """
+            - [ ] Verify layer numbers match your PDK
+            - [ ] Check metal layer definitions for RC extraction
+            - [ ] Validate via/contact resistance values
+            - [ ] Review capacitance model settings
+            - [ ] Confirm output netlist format (HSPICE, Spectre, etc.)
+            """
+            )
+        else:
+            st.info(
+                "Configure parameters and click 'Generate PEX Deck' to create rule deck"
+            )
+
+            with st.expander("Preview PEX Format"):
+                example = """
+// PEX Rule Deck Example
+LAYER METAL1 49
+LAYER VIA    50
+LAYER METAL2 51
+
+// Resistance extraction
+RESISTANCE METAL1 0.08   // ohms/square
+RESISTANCE VIA    0.5    // ohms/via
+
+// Capacitance extraction
+CAPACITANCE METAL1 METAL2 0.05e-15  // F/um^2
+"""
+                st.code(example, language="text")
+
+    st.markdown("---")
+
+    # Calibre xRC User Manual Section
+    st.markdown("### 📖 Calibre xRC User Manual")
+    st.markdown("Reference Manual for Calibre Parasitic Extraction (PEX) Operations")
+
+    # xRC PDF file path
+    xrc_pdf_path = (
+        "/applications/Siemens/Calibre/docs_cal_2024.2_18.9/docs/pdfdocs/xrc_user.pdf"
+    )
+
+    col3, col4 = st.columns([2, 1])
+
+    with col3:
+        st.markdown("#### PDF Document Path")
+        st.text_input(
+            "Full path to Calibre xRC Manual",
+            value=xrc_pdf_path,
+            disabled=True,
+            help="Location of the Calibre xRC User Reference PDF document",
+        )
+
+    with col4:
+        st.markdown("#### View Document")
+        if st.button("📄 View Calibre xRC", type="primary", use_container_width=True):
+            if os.path.exists(xrc_pdf_path):
+                if shutil.which("evince"):
+                    try:
+                        cmd = f'evince "{xrc_pdf_path}" &'
+                        subprocess.Popen(
+                            cmd,
+                            shell=True,
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                        )
+                        st.success("Calibre xRC Manual opened in evince!")
+                    except Exception as e:
+                        st.error(f"Error opening PDF: {str(e)}")
+                else:
+                    st.error("evince PDF viewer not found in PATH.")
+                    st.info("Please install evince: sudo apt-get install evince")
+            else:
+                st.error(f"PDF file not found: {xrc_pdf_path}")
+                st.info(
+                    "Please ensure the xrc_user.pdf file is at the specified location."
+                )
+
+    st.markdown("---")
+
+    # PEX Basics Summary
+    st.markdown("### 📋 PEX Basic Operations Summary")
+
+    with st.expander("📐 Resistance Extraction", expanded=True):
+        st.markdown(
+            """
+        #### RESISTANCE Statement
+        - **Purpose**: Define sheet resistance for metal layers
+        - **Syntax**: `RESISTANCE layer <sheet_resistance_value>`
+        - **Units**: Ohms per square (Ω/□)
+        - **Example**: `RESISTANCE METAL1 0.08` - 0.08 Ω/sq for metal1
+        
+        #### Via Resistance
+        - **Syntax**: `RESISTANCE via_layer <resistance_value>`
+        - **Units**: Ohms per via (Ω)
+        - **Example**: `RESISTANCE VIA 0.5` - 0.5 Ω per via
+        
+        #### Key Parameters:
+        - Sheet resistance varies by layer (poly ~ 5-10 Ω/□, metal ~ 0.03-0.1 Ω/□)
+        - Via resistance typically 0.1-1.0 Ω per cut
+        - Temperature coefficients can be specified
+        """
+        )
+
+    with st.expander("⚡ Capacitance Extraction"):
+        st.markdown(
+            """
+        #### CAPACITANCE Statements
+        - **Purpose**: Extract parasitic capacitances between layers
+        - **Area Capacitance**: `CAPACITANCE layer1 layer2 <value>` (F/μm²)
+        - **Fringe Capacitance**: `FRINGE layer1 layer2 <value>` (F/μm)
+        
+        #### Coupling Capacitance:
+        - Extract capacitance between adjacent nets on same layer
+        - Important for signal integrity analysis
+        - Syntax: `COUPLING layer <value>`
+        
+        #### Typical Values (0.5μm process):
+        - Metal1 to Substrate: ~0.03 fF/μm²
+        - Metal1 to Metal2: ~0.05 fF/μm²  
+        - Poly to Substrate: ~0.1 fF/μm²
+        - Fringe (edge): ~0.05 fF/μm
+        """
+        )
+
+    with st.expander("🔗 Extraction Flow"):
+        st.markdown(
+            """
+        #### PEX Process Flow
+        1. **Layout Input**: Read GDSII layout file
+        2. **Device Recognition**: Identify devices (as in LVS)
+        3. **Parasitic Extraction**: Calculate R and C for interconnects
+        4. **Netlist Generation**: Output SPICE/Spectre netlist with parasitics
+        
+        #### Output Formats:
+        - **HSPICE**: `.sp` netlist with `.INCLUDE` statements
+        - **Spectre**: `.scs` netlist format
+        - **ELDO**: `.cir` circuit file format
+        - **Calibre View**: For Cadence Virtuoso integration
+        
+        #### Extraction Modes:
+        - **R-only**: Resistance only (for power analysis)
+        - **C-only**: Capacitance only (for timing analysis)
+        - **RC**: Resistance and capacitance
+        - **RCC**: R + C + Coupling capacitances (most accurate)
+        """
+        )
+
+    with st.expander("⚙️ PEX Control Statements"):
+        st.markdown(
+            """
+        #### PEX Options
+        - `PEX EXTRACT [R | C | RC | RCC]` - Extraction mode
+        - `PEX NETLIST FORMAT HSPICE` - Output format
+        - `PEX NETLIST GROUND NET VSS` - Ground reference net
+        
+        #### Filtering Options:
+        - `PEX REDUCE MINIMUM R <value>` - Ignore small resistances
+        - `PEX REDUCE MINIMUM C <value>` - Ignore small capacitances
+        - `PEX COUPLING CMAX <value>` - Maximum coupling to report
+        
+        #### Hierarchy:
+        - `PEX HIERARCHY YES` - Hierarchical extraction
+        - `PEX FLATTEN YES` - Flatten before extraction
+        - `PEX CELL EXPAND <cell_name>` - Expand specific cells
+        """
+        )
+
+
+def generate_pex_deck(
+    extraction_type, include_r, include_c, include_coupling, hierarchical
+):
+    """Generate a sample PEX rule deck"""
+    lines = []
+    lines.append("////////////////////////////////////////////////////////")
+    lines.append("// MOSIS SCMOS SUBM Calibre PEX Rule Deck")
+    lines.append(f"// Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    lines.append(f"// Extraction Type: {extraction_type}")
+    lines.append("////////////////////////////////////////////////////////")
+    lines.append("")
+
+    # Layer definitions
+    lines.append("// Layer Definitions")
+    for layer_name, (gds_num, cif_name) in LAYER_MAP.items():
+        lines.append(f"LAYER {layer_name} {gds_num}")
+    lines.append("")
+
+    # Extraction mode
+    lines.append("// Extraction Mode")
+    mode_map = {
+        "R-only (Resistance)": "R",
+        "C-only (Capacitance)": "C",
+        "RC (Resistance + Capacitance)": "RC",
+        "RCC (R + C + Coupling)": "RCC",
+    }
+    lines.append(f"PEX EXTRACT {mode_map.get(extraction_type, 'RC')}")
+    lines.append("")
+
+    # Resistance section
+    if include_r:
+        lines.append("// --------------------------------------------")
+        lines.append("// RESISTANCE EXTRACTION")
+        lines.append("// --------------------------------------------")
+        lines.append("// Sheet resistance values (Ω/sq) for 0.5um SCMOS")
+        lines.append("")
+        lines.append("// Poly layer: ~5-10 Ω/sq (salicided)")
+        lines.append("RESISTANCE POLY 8.0")
+        lines.append("")
+        lines.append("// Metal layers: ~0.03-0.08 Ω/sq")
+        lines.append("RESISTANCE METAL1 0.08")
+        lines.append("RESISTANCE METAL2 0.06")
+        lines.append("RESISTANCE METAL3 0.05")
+        lines.append("")
+        lines.append("// Via resistance: ~0.1-1.0 Ω per cut")
+        lines.append("RESISTANCE VIA 0.5")
+        lines.append("RESISTANCE VIA2 0.5")
+        lines.append("")
+        lines.append("// Contact resistance")
+        lines.append("RESISTANCE CONTACT 1.0")
+        lines.append("")
+
+    # Capacitance section
+    if include_c:
+        lines.append("// --------------------------------------------")
+        lines.append("// CAPACITANCE EXTRACTION")
+        lines.append("// --------------------------------------------")
+        lines.append("// Values in fF/μm² for 0.5um SCMOS process")
+        lines.append("")
+        lines.append("// Parallel plate capacitances")
+        lines.append("CAPACITANCE POLY SUBSTRATE 0.10e-15")
+        lines.append("CAPACITANCE METAL1 SUBSTRATE 0.03e-15")
+        lines.append("CAPACITANCE METAL1 METAL2 0.05e-15")
+        lines.append("CAPACITANCE METAL2 METAL3 0.04e-15")
+        lines.append("")
+        lines.append("// Fringe capacitances (edge effects)")
+        lines.append("FRINGE POLY SUBSTRATE 0.08e-15")
+        lines.append("FRINGE METAL1 SUBSTRATE 0.05e-15")
+        lines.append("")
+
+    # Coupling section
+    if include_coupling:
+        lines.append("// --------------------------------------------")
+        lines.append("// COUPLING CAPACITANCE")
+        lines.append("// --------------------------------------------")
+        lines.append("")
+        lines.append("// Same-layer coupling (lateral capacitance)")
+        lines.append("COUPLING METAL1 0.02e-15")
+        lines.append("COUPLING METAL2 0.02e-15")
+        lines.append("COUPLING METAL3 0.02e-15")
+        lines.append("")
+
+    # PEX settings
+    lines.append("// --------------------------------------------")
+    lines.append("// PEX SETTINGS")
+    lines.append("// --------------------------------------------")
+    lines.append("")
+    if hierarchical:
+        lines.append("PEX HIERARCHY YES")
+    else:
+        lines.append("PEX HIERARCHY NO")
+    lines.append("")
+    lines.append("// Output format")
+    lines.append("PEX NETLIST FORMAT HSPICE")
+    lines.append('PEX NETLIST FILE "pex_output.sp"')
+    lines.append("")
+    lines.append("// Reduce small parasitics")
+    lines.append("PEX REDUCE MINIMUM R 0.1")
+    lines.append("PEX REDUCE MINIMUM C 0.01e-15")
+    lines.append("")
+    lines.append("// Ground net reference")
+    lines.append("PEX NETLIST GROUND NET 0")
+    lines.append("")
+    lines.append("////////////////////////////////////////////////////////")
+    lines.append("// END OF PEX RULE DECK")
+    lines.append("////////////////////////////////////////////////////////")
+    lines.append("")
+
+    return "\n".join(lines)
+
+
+# ============== APP 5: CALIBRE OPC DECK GENERATOR ==============
+
+
+def calibre_opc_generator_app():
+    """Calibre OPC Deck Generator - Generate optical proximity correction rule decks for SCMOS SUBM"""
+    st.markdown("### 🎯 Siemens Calibre OPC Rule Deck Generator")
+    st.markdown(
+        "Generate SVRF format Optical Proximity Correction (OPC) rule decks for MOSIS SCMOS SUBM technology"
+    )
+
+    # Initialize session state for OPC deck
+    if "opc_deck" not in st.session_state:
+        st.session_state.opc_deck = None
+
+    col1, col2 = st.columns([1, 2])
+
+    with col1:
+        st.subheader("Configuration")
+
+        st.markdown("#### OPC Type")
+        opc_type = st.radio(
+            "Select OPC Mode",
+            ["Rule-Based OPC", "Model-Based OPC", "Hybrid OPC (Rule + Model)"],
+            index=1,
+        )
+
+        st.markdown("#### OPC Options")
+        apply_to_poly = st.checkbox("Apply to POLY layer", value=True)
+        apply_to_active = st.checkbox("Apply to ACTIVE layer", value=True)
+        apply_to_metal = st.checkbox("Apply to Metal layers", value=False)
+        apply_to_contacts = st.checkbox("Apply to Contacts/Vias", value=False)
+
+        st.markdown("#### Advanced Options")
+        fragmentation = st.slider("Edge Fragmentation (nm)", 5, 50, 20)
+        correction_tolerance = st.slider("Correction Tolerance (nm)", 1, 10, 2)
+
+        st.markdown("---")
+        if st.button("Generate OPC Deck", type="primary"):
+            with st.spinner("Generating OPC rule deck..."):
+                try:
+                    # Generate OPC rule deck content
+                    opc_content = generate_opc_deck(
+                        opc_type,
+                        apply_to_poly,
+                        apply_to_active,
+                        apply_to_metal,
+                        apply_to_contacts,
+                        fragmentation,
+                        correction_tolerance,
+                    )
+                    st.session_state.opc_deck = opc_content
+                    st.success("OPC rule deck generated successfully!")
+                except Exception as e:
+                    st.error(f"Error generating OPC deck: {str(e)}")
+
+    with col2:
+        st.subheader("Generated OPC Rule Deck")
+
+        if st.session_state.opc_deck:
+            st.code(st.session_state.opc_deck, language="text")
+
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            st.download_button(
+                label="📥 Download Calibre OPC Deck (.svrf)",
+                data=st.session_state.opc_deck,
+                file_name=f"mosis_scmos_opc_{timestamp}.svrf",
+                mime="text/plain",
+            )
+
+            st.markdown("#### Validation Checklist")
+            st.markdown(
+                """
+            - [ ] Verify target layer numbers match your PDK
+            - [ ] Check OPC model calibration data
+            - [ ] Validate fragmentation settings for feature sizes
+            - [ ] Review correction tolerance against process requirements
+            - [ ] Confirm mask writer compatibility (MEB/LEB)
+            """
+            )
+        else:
+            st.info(
+                "Configure parameters and click 'Generate OPC Deck' to create rule deck"
+            )
+
+            with st.expander("Preview OPC Format"):
+                example = """
+// OPC Rule Deck Example
+LAYER POLY 46
+LAYER OPC_TARGET 999
+
+// Fragmentation settings
+FRAGMENTATION POLY LENGTH 20
+
+// Bias correction
+BIAS POLY OPC_TARGET 0.02
+
+// Hammerhead correction for line ends
+HAMMERHEAD POLY OPC_TARGET LENGTH 0.1
+"""
+                st.code(example, language="text")
+
+    st.markdown("---")
+
+    # Calibre nmOPC User Reference Section
+    st.markdown("### 📖 Calibre nmOPC User Reference")
+    st.markdown("Reference Manual for Calibre Optical Proximity Correction Operations")
+
+    # nmOPC PDF file path
+    nmopc_pdf_path = "/applications/Siemens/Calibre/docs_cal_2024.2_18.9/docs/pdfdocs/calbr_nmopc_user.pdf"
+
+    col3, col4 = st.columns([2, 1])
+
+    with col3:
+        st.markdown("#### PDF Document Path")
+        st.text_input(
+            "Full path to Calibre nmOPC Reference",
+            value=nmopc_pdf_path,
+            disabled=True,
+            help="Location of the Calibre nmOPC User Reference PDF document",
+        )
+
+    with col4:
+        st.markdown("#### View Document")
+        if st.button(
+            "📄 View Calibre nmOPC User Reference",
+            type="primary",
+            use_container_width=True,
+        ):
+            if os.path.exists(nmopc_pdf_path):
+                if shutil.which("evince"):
+                    try:
+                        cmd = f'evince "{nmopc_pdf_path}" &'
+                        subprocess.Popen(
+                            cmd,
+                            shell=True,
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                        )
+                        st.success("Calibre nmOPC Reference opened in evince!")
+                    except Exception as e:
+                        st.error(f"Error opening PDF: {str(e)}")
+                else:
+                    st.error("evince PDF viewer not found in PATH.")
+                    st.info("Please install evince: sudo apt-get install evince")
+            else:
+                st.error(f"PDF file not found: {nmopc_pdf_path}")
+                st.info(
+                    "Please ensure the calbr_nmopc_user.pdf file is at the specified location."
+                )
+
+    st.markdown("---")
+
+    # Calibre OPCpro User Reference Section
+    st.markdown("### 📖 Calibre OPCpro User Reference")
+    st.markdown("Advanced OPC Professional User Reference Guide")
+
+    # OPCpro PDF file path
+    opcpro_pdf_path = "/applications/Siemens/Calibre/docs_2024.2_18.9/docs/pdfdocs/calbr_opcpro_useref.pdf"
+
+    col5, col6 = st.columns([2, 1])
+
+    with col5:
+        st.markdown("#### PDF Document Path")
+        st.text_input(
+            "Full path to Calibre OPCpro Reference",
+            value=opcpro_pdf_path,
+            disabled=True,
+            help="Location of the Calibre OPCpro User Reference PDF document",
+        )
+
+    with col6:
+        st.markdown("#### View Document")
+        if st.button(
+            "📄 View Calibre OPCpro User Reference",
+            type="primary",
+            use_container_width=True,
+        ):
+            if os.path.exists(opcpro_pdf_path):
+                if shutil.which("evince"):
+                    try:
+                        cmd = f'evince "{opcpro_pdf_path}" &'
+                        subprocess.Popen(
+                            cmd,
+                            shell=True,
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                        )
+                        st.success("Calibre OPCpro Reference opened in evince!")
+                    except Exception as e:
+                        st.error(f"Error opening PDF: {str(e)}")
+                else:
+                    st.error("evince PDF viewer not found in PATH.")
+                    st.info("Please install evince: sudo apt-get install evince")
+            else:
+                st.error(f"PDF file not found: {opcpro_pdf_path}")
+                st.info(
+                    "Please ensure the calbr_opcpro_useref.pdf file is at the specified location."
+                )
+
+    st.markdown("---")
+
+    # Calibre OPCverify User Reference Section
+    st.markdown("### 📖 Calibre OPCverify User Reference")
+    st.markdown("OPC Verification and Printability Check User Reference Guide")
+
+    # OPCverify PDF file path
+    opcv_pdf_path = "/applications/Siemens/Calibre/docs_2024.2_18.9/docs/pdfdocs/calbr_opcv_useref.pdf"
+
+    col7, col8 = st.columns([2, 1])
+
+    with col7:
+        st.markdown("#### PDF Document Path")
+        st.text_input(
+            "Full path to Calibre OPCverify Reference",
+            value=opcv_pdf_path,
+            disabled=True,
+            help="Location of the Calibre OPCverify User Reference PDF document",
+        )
+
+    with col8:
+        st.markdown("#### View Document")
+        if st.button(
+            "📄 View Calibre OPCverify User Reference",
+            type="primary",
+            use_container_width=True,
+        ):
+            if os.path.exists(opcv_pdf_path):
+                if shutil.which("evince"):
+                    try:
+                        cmd = f'evince "{opcv_pdf_path}" &'
+                        subprocess.Popen(
+                            cmd,
+                            shell=True,
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                        )
+                        st.success("Calibre OPCverify Reference opened in evince!")
+                    except Exception as e:
+                        st.error(f"Error opening PDF: {str(e)}")
+                else:
+                    st.error("evince PDF viewer not found in PATH.")
+                    st.info("Please install evince: sudo apt-get install evince")
+            else:
+                st.error(f"PDF file not found: {opcv_pdf_path}")
+                st.info(
+                    "Please ensure the calbr_opcv_useref.pdf file is at the specified location."
+                )
+
+    st.markdown("---")
+
+    # OPC Basics Summary
+    st.markdown("### 📋 OPC Basic Operations Summary")
+
+    with st.expander("📐 OPC Fundamentals", expanded=True):
+        st.markdown(
+            """
+        #### What is OPC?
+        - **Purpose**: Correct optical distortions that occur during lithography
+        - **Issue**: Diffraction effects cause printed features to differ from drawn shapes
+        - **Solution**: Pre-distort mask data so final wafer image matches intent
+        
+        #### Key OPC Concepts:
+        - **Fragmentation**: Break edges into segments for individual correction
+        - **Bias**: Move edge segments inward/outward to compensate proximity effects
+        - **Hammerheads**: Extend line ends to compensate line-end shortening
+        - **Serifs**: Add small features at corners to improve corner rounding
+        
+        #### OPC Types:
+        - **Rule-Based OPC**: Uses predetermined geometric rules
+        - **Model-Based OPC**: Uses lithography simulation models
+        - **Hybrid OPC**: Combines rule-based and model-based approaches
+        """
+        )
+
+    with st.expander("⚡ Fragmentation and Correction"):
+        st.markdown(
+            """
+        #### FRAGMENTATION Statement
+        - **Purpose**: Divide polygon edges into segments for correction
+        - **Syntax**: `FRAGMENTATION layer [LENGTH <value> | MINLENGTH <value>]`
+        - **Example**: `FRAGMENTATION POLY LENGTH 0.02` - 20nm segments
+        
+        #### BIAS Statement
+        - **Purpose**: Apply dimensional correction to fragments
+        - **Syntax**: `BIAS input_layer output_layer <bias_amount>`
+        - **Positive Bias**: Expand outward (adds material)
+        - **Negative Bias**: Shrink inward (removes material)
+        
+        #### Key Parameters:
+        - **Fragment Length**: Typically 10-50nm depending on process node
+        - **Bias Amount**: Usually 5-50nm based on proximity effects
+        - **Jog Handling**: Control how small jogs are managed during fragmentation
+        """
+        )
+
+    with st.expander("🔗 Model-Based OPC"):
+        st.markdown(
+            """
+        #### OPC Model Requirements
+        1. **Optical Model**: Simulates aerial image formation
+        2. **Resist Model**: Models photoresist response
+        3. **Etch Model**: Models post-etch effects (optional)
+        
+        #### Model Calibration:
+        - Requires test patterns with measured wafer data
+        - Typical calibration structures: Line/space arrays, contact arrays
+        - Model accuracy target: <2nm RMS error
+        
+        #### Lithography Parameters:
+        - **Wavelength**: 193nm, 248nm, etc.
+        - **Numerical Aperture (NA)**: 0.6-1.35+
+        - **Illumination**: Annular, dipole, quadrupole, etc.
+        - **Sigma (partial coherence)**: Inner/outer sigma values
+        """
+        )
+
+    with st.expander("⚙️ OPC Control Statements"):
+        st.markdown(
+            """
+        #### OPC Settings
+        - `OPC MODEL "./opc_model.mod"` - Load OPC model file
+        - `OPC ITERATION MAXIMUM 20` - Maximum correction iterations
+        - `OPC TOLERANCE 0.002` - Convergence tolerance (μm)
+        
+        #### Hammerhead and Serif Rules:
+        - `HAMMERHEAD layer target LENGTH <extension>`
+        - `SERIF layer target SIZE <width> <height>`
+        
+        #### Output Control:
+        - `OPC OUTPUT LAYER <layer_number>`
+        - `OPC KEEP FRAGMENTS` - Preserve fragmentation in output
+        - `OPC MERGE` - Merge corrected fragments
+        
+        #### Advanced Options:
+        - `OPC CORNER ROUNDING` - Handle corner effects
+        - `OPC JOG CONTROL` - Manage small jog artifacts
+        - `OPC DISSECTION` - Control edge dissection algorithm
+        """
+        )
+
+
+def generate_opc_deck(
+    opc_type, poly, active, metal, contacts, fragmentation, tolerance
+):
+    """Generate a sample OPC rule deck"""
+    lines = []
+    lines.append("////////////////////////////////////////////////////////")
+    lines.append("// MOSIS SCMOS SUBM Calibre OPC Rule Deck")
+    lines.append(f"// Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    lines.append(f"// OPC Type: {opc_type}")
+    lines.append(f"// Fragmentation: {fragmentation}nm")
+    lines.append(f"// Tolerance: {tolerance}nm")
+    lines.append("////////////////////////////////////////////////////////")
+    lines.append("")
+
+    # Layer definitions
+    lines.append("// Layer Definitions")
+    for layer_name, (gds_num, cif_name) in LAYER_MAP.items():
+        lines.append(f"LAYER {layer_name} {gds_num}")
+    lines.append("")
+
+    # Output layer
+    lines.append("// OPC Output Layer")
+    lines.append("LAYER OPC_RESULT 999")
+    lines.append("")
+
+    # OPC mode
+    lines.append("// --------------------------------------------")
+    lines.append(f"// OPC MODE: {opc_type.upper()}")
+    lines.append("// --------------------------------------------")
+    lines.append("")
+
+    if "Model" in opc_type:
+        lines.append("// Model-Based OPC Configuration")
+        lines.append('OPC MODEL "./scmos_500nm_opc.mod"')
+        lines.append(f"OPC TOLERANCE {tolerance / 1000:.3f}")  # Convert nm to um
+        lines.append("OPC ITERATION MAXIMUM 15")
+        lines.append("")
+
+    # Fragmentation settings
+    lines.append("// --------------------------------------------")
+    lines.append("// FRAGMENTATION SETTINGS")
+    lines.append("// --------------------------------------------")
+    lines.append("")
+
+    frag_um = fragmentation / 1000.0  # Convert to microns
+
+    if poly:
+        lines.append(f"// POLY Layer Fragmentation")
+        lines.append(f"FRAGMENTATION POLY LENGTH {frag_um:.3f}")
+        lines.append("")
+
+    if active:
+        lines.append(f"// ACTIVE Layer Fragmentation")
+        lines.append(f"FRAGMENTATION ACTIVE LENGTH {frag_um:.3f}")
+        lines.append("")
+
+    if metal:
+        lines.append(f"// Metal Layers Fragmentation")
+        lines.append(f"FRAGMENTATION METAL1 LENGTH {frag_um:.3f}")
+        lines.append(f"FRAGMENTATION METAL2 LENGTH {frag_um:.3f}")
+        lines.append(f"FRAGMENTATION METAL3 LENGTH {frag_um:.3f}")
+        lines.append("")
+
+    # Rule-based corrections
+    if "Rule" in opc_type or "Hybrid" in opc_type:
+        lines.append("// --------------------------------------------")
+        lines.append("// RULE-BASED OPC CORRECTIONS")
+        lines.append("// --------------------------------------------")
+        lines.append("")
+
+        if poly:
+            lines.append("// POLY Layer Corrections")
+            lines.append("// Line-end extension (Hammerheads)")
+            lines.append("HAMMERHEAD POLY OPC_RESULT LENGTH 0.08")
+            lines.append("")
+            lines.append("// Corner serif additions")
+            lines.append("SERIF POLY OPC_RESULT SIZE 0.03 0.03")
+            lines.append("")
+            lines.append("// Bias corrections")
+            lines.append("// Positive bias for isolated lines")
+            lines.append("BIAS POLY OPC_RESULT 0.015")
+            lines.append("")
+
+        if active:
+            lines.append("// ACTIVE Layer Corrections")
+            lines.append("HAMMERHEAD ACTIVE OPC_RESULT LENGTH 0.06")
+            lines.append("BIAS ACTIVE OPC_RESULT 0.010")
+            lines.append("")
+
+        if contacts:
+            lines.append("// Contact/Via OPC")
+            lines.append("// Bias to improve contact opening")
+            lines.append("BIAS CONTACT OPC_RESULT 0.008")
+            lines.append("BIAS VIA OPC_RESULT 0.008")
+            lines.append("")
+
+    # Model-based corrections
+    if "Model" in opc_type:
+        lines.append("// --------------------------------------------")
+        lines.append("// MODEL-BASED OPC CORRECTIONS")
+        lines.append("// Uses lithography simulation model")
+        lines.append("// --------------------------------------------")
+        lines.append("")
+        lines.append("// Run OPC on fragmented layers")
+
+        target_layers = []
+        if poly:
+            target_layers.append("POLY")
+        if active:
+            target_layers.append("ACTIVE")
+        if metal:
+            target_layers.extend(["METAL1", "METAL2", "METAL3"])
+
+        for layer in target_layers:
+            lines.append(f"OPC {layer} OPC_RESULT")
+        lines.append("")
+
+        lines.append("// Jog control to manage small artifacts")
+        lines.append("OPC JOG CONTROL MINIMUM 0.03")
+        lines.append("")
+
+    # Output settings
+    lines.append("// --------------------------------------------")
+    lines.append("// OUTPUT SETTINGS")
+    lines.append("// --------------------------------------------")
+    lines.append("")
+    lines.append("// Merge corrected fragments")
+    lines.append("OPC MERGE OPC_RESULT")
+    lines.append("")
+    lines.append("// Output to GDS")
+    lines.append("LAYOUT SYSTEM GDSII")
+    lines.append('LAYOUT PATH "./opc_output.gds"')
+    lines.append("")
+    lines.append("////////////////////////////////////////////////////////")
+    lines.append("// END OF OPC RULE DECK")
+    lines.append("////////////////////////////////////////////////////////")
+    lines.append("")
+
+    return "\n".join(lines)
+
+
+# ============== APP 6: DESIGN LAYOUT MANUAL REFERENCE ==============
+
+
+def dlm_reference_app():
+    """Design Layout Manual Reference - View and reference MOSIS SCMOS layout rules"""
+    st.markdown("### 📖 Design Layout Manual Reference")
+    st.markdown("MOSIS SCMOS SUBM Technology Layout Rules and Guidelines")
+
+    # PDF file path
+    pdf_path = "/datastore01/pnguyen/proj/apps/streamlit/mosis/MOSIS_SCMOS_SUBM_Layout_Rules.pdf"
+
+    # Check if file exists
+    if not os.path.exists(pdf_path):
+        st.error(f"PDF file not found: {pdf_path}")
+        st.info(
+            "Please ensure the MOSIS_SCMOS_SUBM_Layout_Rules.pdf file is in the project directory."
+        )
+        return
+
+    col1, col2 = st.columns([2, 1])
+
+    with col1:
+        st.markdown("#### PDF Document Path")
+        st.text_input(
+            "Full path to Design Layout Manual",
+            value=pdf_path,
+            disabled=True,
+            help="Location of the MOSIS SCMOS SUBM Layout Rules PDF document",
+        )
+
+    with col2:
+        st.markdown("#### View Document")
+        if st.button("📄 View DLM", type="primary", use_container_width=True):
+            # Check if evince is available
+            if shutil.which("evince"):
+                try:
+                    cmd = f'evince "{pdf_path}" &'
+                    subprocess.Popen(
+                        cmd,
+                        shell=True,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
+                    st.success("Design Layout Manual opened in evince!")
+                except Exception as e:
+                    st.error(f"Error opening PDF: {str(e)}")
+            else:
+                st.error("evince PDF viewer not found in PATH.")
+                st.info("Please install evince: sudo apt-get install evince")
+
+    st.markdown("---")
+
+    # Source URL Section
+    dlm_url = "http://web.itu.edu.tr/ceviki/MOSIS_SCMOS_SUBM_Layout_Rules.pdf"
+
+    col3, col4 = st.columns([2, 1])
+
+    with col3:
+        st.markdown("#### Document Source URL")
+        st.markdown(f"**Source**: [{dlm_url}]({dlm_url})")
+        st.caption("Document cited from ITU website")
+
+    with col4:
+        st.markdown("#### Open Source")
+        if st.button(
+            "🔗 Open URL in Browser", type="secondary", use_container_width=True
+        ):
+            import webbrowser
+
+            try:
+                webbrowser.open(dlm_url)
+                st.success("Opening URL in default browser...")
+            except Exception as e:
+                st.error(f"Error opening URL: {str(e)}")
+
+    st.markdown("---")
+
+    # Quick Reference Guide
+    st.markdown("### 📋 Quick Reference Guide")
+
+    with st.expander("🔧 Technology Overview", expanded=True):
+        st.markdown("""
+        **Technology**: SCMOS SUBM (Scalable CMOS Sub-Micron)
+        
+        **Key Features**:
+        - N-well process
+        - 3-metal layer support (METAL1, METAL2, METAL3)
+        - 2-poly layer support (POLY, POLY2)
+        - Sub-micron design rules
+        - Grid-based design (0.5 lambda grid)
+        
+        **Process Node**: Scalable from 0.5μm to sub-micron
+        **Design Units**: All dimensions in microns, scaled by lambda
+        **Grid Resolution**: All geometry must be on 0.5 lambda grid
+        """)
+
+    with st.expander("📐 Critical Design Rules Summary"):
+        st.markdown("""
+        #### N-WELL Rules
+        - **Minimum Width**: 12λ (6.0 μm @ λ=0.5μm)
+        - **Same Potential Spacing**: 6λ (3.0 μm)
+        - **Different Potential Spacing**: 18λ (9.0 μm)
+        
+        #### ACTIVE Area Rules
+        - **Minimum Width**: 3λ (1.5 μm)
+        - **Minimum Spacing**: 3λ (1.5 μm)
+        - **To Well Edge**: 6λ (3.0 μm)
+        
+        #### POLY Rules
+        - **Minimum Width**: 2λ (1.0 μm)
+        - **Field Spacing**: 3λ (1.5 μm)
+        - **Extension over Active**: 2λ (1.0 μm)
+        
+        #### Contact Rules
+        - **Size**: 2λ × 2λ (1.0 × 1.0 μm)
+        - **Active Overlap**: 1.5λ (0.75 μm)
+        - **Spacing**: 3λ (1.5 μm)
+        
+        #### METAL1 Rules
+        - **Minimum Width**: 3λ (1.5 μm)
+        - **Minimum Spacing**: 3λ (1.5 μm)
+        
+        #### Via Rules
+        - **Size**: 2λ × 2λ (1.0 × 1.0 μm)
+        - **Spacing**: 3λ (1.5 μm)
+        
+        #### METAL2 Rules
+        - **Minimum Width**: 3λ (1.5 μm)
+        - **Minimum Spacing**: 3λ (1.5 μm)
+        
+        #### METAL3 Rules
+        - **Minimum Width**: 6λ (3.0 μm)
+        - **Minimum Spacing**: 3λ (1.5 μm)
+        """)
+
+    with st.expander("⚠️ Important Design Notes"):
+        st.markdown("""
+        #### Manufacturing Constraints
+        1. **All contacts must be orthogonal** - Non-Manhattan geometry not allowed
+        2. **Poly contacts require larger overlap** than active contacts
+        3. **Wide metal spacing rules** apply for metal width > 10λ
+        4. **Via2 spacing** is more restrictive than Via1
+        
+        #### DRC Considerations
+        - Use Calibre nmDRC for verification
+        - Lambda scaling must be consistent throughout design
+        - Derived layers (gate, channel) computed automatically
+        - OPPOSITE keyword used for different potential well checks
+        
+        #### Best Practices
+        - Always use minimum grid (0.5λ) for all geometry
+        - Place substrate/well contacts regularly
+        - Avoid acute angles in layout
+        - Use consistent lambda value (default: 0.5μm)
+        """)
+
+    st.markdown("---")
+
+    # Layer Reference Summary
+    st.markdown("### 📊 Layer Stack Summary")
+
+    layer_stack_data = [
+        {"Level": 1, "Layer": "N_WELL", "GDS": 42, "Purpose": "N-well diffusion"},
+        {
+            "Level": 2,
+            "Layer": "ACTIVE",
+            "GDS": 43,
+            "Purpose": "Active area (diffusion)",
+        },
+        {"Level": 3, "Layer": "POLY", "GDS": 46, "Purpose": "Polysilicon (gate)"},
+        {
+            "Level": 4,
+            "Layer": "N_PLUS_SELECT",
+            "GDS": 45,
+            "Purpose": "N+ implant select",
+        },
+        {
+            "Level": 5,
+            "Layer": "P_PLUS_SELECT",
+            "GDS": 44,
+            "Purpose": "P+ implant select",
+        },
+        {"Level": 6, "Layer": "CONTACT", "GDS": 25, "Purpose": "Active contact"},
+        {"Level": 7, "Layer": "POLY_CONTACT", "GDS": 47, "Purpose": "Poly contact"},
+        {"Level": 8, "Layer": "METAL1", "GDS": 49, "Purpose": "First metal layer"},
+        {"Level": 9, "Layer": "VIA", "GDS": 50, "Purpose": "Metal1-Metal2 via"},
+        {"Level": 10, "Layer": "METAL2", "GDS": 51, "Purpose": "Second metal layer"},
+        {"Level": 11, "Layer": "VIA2", "GDS": 61, "Purpose": "Metal2-Metal3 via"},
+        {"Level": 12, "Layer": "METAL3", "GDS": 62, "Purpose": "Third metal layer"},
+        {"Level": 13, "Layer": "GLASS", "GDS": 52, "Purpose": "Passivation/bond pad"},
+    ]
+
+    df_stack = pd.DataFrame(layer_stack_data)
+    df_stack.index = df_stack.index + 1  # Start from 1
+    st.dataframe(df_stack, use_container_width=True)
+
+    st.markdown("---")
+
+    # File info
+    st.markdown("### 📁 Document Information")
+    file_size = os.path.getsize(pdf_path) / 1024  # KB
+    st.info(
+        f"**File**: MOSIS_SCMOS_SUBM_Layout_Rules.pdf  |  **Size**: {file_size:.1f} KB  |  **Location**: {os.path.dirname(pdf_path)}"
+    )
+
+
+# ============== APP 7: INVERTER LAYOUT INTRODUCTION ==============
+
+
+def generate_inverter_layout_images():
+    """Generate realistic mask-level layout images for inverter using matplotlib"""
+
+    # Create figure with multiple subplots
+    fig = plt.figure(figsize=(16, 12))
+
+    # Define layer colors (standard GDS viewer colors)
+    layer_colors = {
+        "n_well": "#FFD700",  # Gold/Yellow
+        "p_well": "#FFA500",  # Orange
+        "active": "#90EE90",  # Light Green
+        "p_plus": "#FFB6C1",  # Light Pink
+        "n_plus": "#98FB98",  # Pale Green
+        "poly": "#FF1493",  # Deep Pink
+        "poly2": "#FF69B4",  # Hot Pink
+        "contact": "#000000",  # Black
+        "metal1": "#4682B4",  # Steel Blue
+        "via": "#2F4F4F",  # Dark Slate Gray
+        "metal2": "#87CEEB",  # Sky Blue
+        "metal3": "#B0C4DE",  # Light Steel Blue
+        "glass": "#F5F5DC",  # Beige
+        "text": "#FFFFFF",  # White
+    }
+
+    # Subplot 1: Complete Layout (Top View)
+    ax1 = plt.subplot(2, 3, 1)
+    ax1.set_xlim(-1, 22)
+    ax1.set_ylim(-1, 22)
+    ax1.set_aspect("equal")
+    ax1.set_title(
+        "Complete Inverter Layout (All Layers)", fontsize=12, fontweight="bold"
+    )
+    ax1.axis("off")
+
+    # Draw N-Well (large rectangle)
+    n_well = patches.Rectangle(
+        (2, 12),
+        18,
+        9,
+        linewidth=2,
+        edgecolor="#8B4513",
+        facecolor=layer_colors["n_well"],
+        alpha=0.7,
+        linestyle="-",
+    )
+    ax1.add_patch(n_well)
+    ax1.text(
+        11,
+        16.5,
+        "N-WELL",
+        ha="center",
+        va="center",
+        fontsize=9,
+        fontweight="bold",
+        color="#8B4513",
+    )
+
+    # Draw PMOS Active area
+    pmos_active = patches.Rectangle(
+        (4, 13.5),
+        14,
+        3,
+        linewidth=2,
+        edgecolor="#006400",
+        facecolor=layer_colors["p_plus"],
+        alpha=0.8,
+    )
+    ax1.add_patch(pmos_active)
+
+    # Draw NMOS Active area
+    nmos_active = patches.Rectangle(
+        (4, 3),
+        14,
+        3,
+        linewidth=2,
+        edgecolor="#006400",
+        facecolor=layer_colors["n_plus"],
+        alpha=0.8,
+    )
+    ax1.add_patch(nmos_active)
+
+    # Draw shared Poly gate
+    poly_gate = patches.Rectangle(
+        (10, 2),
+        2,
+        16,
+        linewidth=3,
+        edgecolor="#8B0000",
+        facecolor=layer_colors["poly"],
+        alpha=0.9,
+    )
+    ax1.add_patch(poly_gate)
+    ax1.text(
+        11,
+        10,
+        "POLY\nGATE",
+        ha="center",
+        va="center",
+        fontsize=8,
+        fontweight="bold",
+        color="white",
+    )
+
+    # Draw contacts (small squares)
+    contact_positions = [
+        (6, 14.5),
+        (16, 14.5),  # PMOS S/D contacts
+        (6, 4),
+        (16, 4),  # NMOS S/D contacts
+        (10.5, 9),  # Single centered gate contact inside poly layer
+    ]
+    for pos in contact_positions:
+        contact = patches.Rectangle(
+            (pos[0], pos[1]),
+            1,
+            1,
+            linewidth=1,
+            edgecolor="black",
+            facecolor=layer_colors["contact"],
+        )
+        ax1.add_patch(contact)
+
+    # Draw Metal1 rails
+    vdd_rail = patches.Rectangle(
+        (0, 19),
+        22,
+        2,
+        linewidth=2,
+        edgecolor="#000080",
+        facecolor=layer_colors["metal1"],
+        alpha=0.8,
+    )
+    ax1.add_patch(vdd_rail)
+    ax1.text(
+        11,
+        20,
+        "VDD (METAL1)",
+        ha="center",
+        va="center",
+        fontsize=10,
+        fontweight="bold",
+        color="white",
+    )
+
+    vss_rail = patches.Rectangle(
+        (0, -1),
+        22,
+        2,
+        linewidth=2,
+        edgecolor="#000080",
+        facecolor=layer_colors["metal1"],
+        alpha=0.8,
+    )
+    ax1.add_patch(vss_rail)
+    ax1.text(
+        11,
+        0,
+        "VSS (METAL1)",
+        ha="center",
+        va="center",
+        fontsize=10,
+        fontweight="bold",
+        color="white",
+    )
+
+    # Draw output Metal1 connection (extended to connect with drain contacts)
+    output_metal = patches.Rectangle(
+        (15, 3.5),
+        4,
+        12.5,
+        linewidth=2,
+        edgecolor="#000080",
+        facecolor=layer_colors["metal1"],
+        alpha=0.6,
+    )
+    ax1.add_patch(output_metal)
+    ax1.text(
+        17,
+        10,
+        "OUTPUT",
+        ha="center",
+        va="center",
+        fontsize=8,
+        fontweight="bold",
+        color="white",
+        rotation=90,
+    )
+
+    # Draw Metal1 connections from VDD to PMOS source
+    vdd_to_pmos_1 = patches.Rectangle(
+        (6, 15.5),
+        1,
+        3.5,
+        linewidth=1,
+        edgecolor="#000080",
+        facecolor=layer_colors["metal1"],
+        alpha=0.7,
+    )
+    ax1.add_patch(vdd_to_pmos_1)
+
+    # Draw Metal1 connections from VSS to NMOS source
+    vss_to_nmos_1 = patches.Rectangle(
+        (6, -0.5),
+        1,
+        4.5,
+        linewidth=1,
+        edgecolor="#000080",
+        facecolor=layer_colors["metal1"],
+        alpha=0.7,
+    )
+    ax1.add_patch(vss_to_nmos_1)
+
+    # Draw Metal1 connections from OUTPUT to PMOS and NMOS drains (right side)
+    out_to_pmos_drain = patches.Rectangle(
+        (15, 14.5),
+        2,
+        1,
+        linewidth=1,
+        edgecolor="#000080",
+        facecolor=layer_colors["metal1"],
+        alpha=0.7,
+    )
+    ax1.add_patch(out_to_pmos_drain)
+    out_to_nmos_drain = patches.Rectangle(
+        (15, 4),
+        2,
+        1,
+        linewidth=1,
+        edgecolor="#000080",
+        facecolor=layer_colors["metal1"],
+        alpha=0.7,
+    )
+    ax1.add_patch(out_to_nmos_drain)
+
+    # Subplot 2: Layer Breakdown - N-Well
+    ax2 = plt.subplot(2, 3, 2)
+    ax2.set_xlim(0, 22)
+    ax2.set_ylim(0, 22)
+    ax2.set_aspect("equal")
+    ax2.set_title("Layer 1: N-Well", fontsize=12, fontweight="bold")
+    ax2.axis("off")
+
+    # Draw N-Well
+    n_well2 = patches.Rectangle(
+        (2, 12),
+        18,
+        9,
+        linewidth=3,
+        edgecolor="#8B4513",
+        facecolor=layer_colors["n_well"],
+        alpha=0.8,
+    )
+    ax2.add_patch(n_well2)
+    ax2.text(
+        11,
+        16.5,
+        "N-WELL\n(GDS 42)",
+        ha="center",
+        va="center",
+        fontsize=11,
+        fontweight="bold",
+        color="#8B4513",
+    )
+
+    # Add legend
+    ax2.text(
+        11,
+        2,
+        "Defines PMOS region\nP+ substrate tap area",
+        ha="center",
+        va="center",
+        fontsize=9,
+        style="italic",
+        bbox=dict(boxstyle="round", facecolor="white", alpha=0.8),
+    )
+
+    # Subplot 3: Layer Breakdown - Active Areas
+    ax3 = plt.subplot(2, 3, 3)
+    ax3.set_xlim(0, 22)
+    ax3.set_ylim(0, 22)
+    ax3.set_aspect("equal")
+    ax3.set_title("Layer 2: Active + Select", fontsize=12, fontweight="bold")
+    ax3.axis("off")
+
+    # Draw PMOS active (P+ select)
+    pmos_act = patches.Rectangle(
+        (4, 13.5),
+        14,
+        3,
+        linewidth=2,
+        edgecolor="#C71585",
+        facecolor=layer_colors["p_plus"],
+        alpha=0.8,
+    )
+    ax3.add_patch(pmos_act)
+    ax3.text(
+        11,
+        15,
+        "P+ ACTIVE\n(GDS 43 + 44)",
+        ha="center",
+        va="center",
+        fontsize=9,
+        fontweight="bold",
+        color="#C71585",
+    )
+
+    # Draw NMOS active (N+ select)
+    nmos_act = patches.Rectangle(
+        (4, 3),
+        14,
+        3,
+        linewidth=2,
+        edgecolor="#006400",
+        facecolor=layer_colors["n_plus"],
+        alpha=0.8,
+    )
+    ax3.add_patch(nmos_act)
+    ax3.text(
+        11,
+        4.5,
+        "N+ ACTIVE\n(GDS 43 + 45)",
+        ha="center",
+        va="center",
+        fontsize=9,
+        fontweight="bold",
+        color="#006400",
+    )
+
+    # Subplot 4: Layer Breakdown - Poly Gate
+    ax4 = plt.subplot(2, 3, 4)
+    ax4.set_xlim(0, 22)
+    ax4.set_ylim(0, 22)
+    ax4.set_aspect("equal")
+    ax4.set_title("Layer 3: Poly Gate", fontsize=12, fontweight="bold")
+    ax4.axis("off")
+
+    # Draw poly gate only
+    poly_only = patches.Rectangle(
+        (10, 2),
+        2,
+        16,
+        linewidth=3,
+        edgecolor="#8B0000",
+        facecolor=layer_colors["poly"],
+        alpha=0.9,
+    )
+    ax4.add_patch(poly_only)
+
+    # Add labels for PMOS and NMOS regions
+    ax4.text(
+        11,
+        17,
+        "PMOS\nGATE",
+        ha="center",
+        va="center",
+        fontsize=9,
+        fontweight="bold",
+        color="white",
+    )
+    ax4.text(
+        11,
+        5,
+        "NMOS\nGATE",
+        ha="center",
+        va="center",
+        fontsize=9,
+        fontweight="bold",
+        color="white",
+    )
+    ax4.text(
+        11,
+        1,
+        "POLY (GDS 46)\nWidth: 2λ (1.0μm)",
+        ha="center",
+        va="center",
+        fontsize=9,
+        style="italic",
+        bbox=dict(boxstyle="round", facecolor="white", alpha=0.9),
+    )
+
+    # Subplot 5: Layer Breakdown - Contacts
+    ax5 = plt.subplot(2, 3, 5)
+    ax5.set_xlim(0, 22)
+    ax5.set_ylim(0, 22)
+    ax5.set_aspect("equal")
+    ax5.set_title("Layer 4: Contacts", fontsize=12, fontweight="bold")
+    ax5.axis("off")
+
+    # Draw active areas (light)
+    pmos_light = patches.Rectangle(
+        (4, 13.5),
+        14,
+        3,
+        linewidth=1,
+        edgecolor="gray",
+        facecolor="lightgray",
+        alpha=0.3,
+    )
+    ax5.add_patch(pmos_light)
+    nmos_light = patches.Rectangle(
+        (4, 3), 14, 3, linewidth=1, edgecolor="gray", facecolor="lightgray", alpha=0.3
+    )
+    ax5.add_patch(nmos_light)
+
+    # Draw poly gate (light)
+    poly_light = patches.Rectangle(
+        (10, 2), 2, 16, linewidth=1, edgecolor="gray", facecolor="lightgray", alpha=0.3
+    )
+    ax5.add_patch(poly_light)
+
+    # Draw contacts (prominent)
+    for pos in contact_positions:
+        contact = patches.Rectangle(
+            (pos[0], pos[1]), 1, 1, linewidth=2, edgecolor="black", facecolor="black"
+        )
+        ax5.add_patch(contact)
+        # Add white square inside
+        inner = patches.Rectangle(
+            (pos[0] + 0.2, pos[1] + 0.2), 0.6, 0.6, facecolor="white", alpha=0.8
+        )
+        ax5.add_patch(inner)
+
+    ax5.text(
+        11,
+        1,
+        "CONTACT (GDS 25)\nSize: 2λ × 2λ (1.0μm²)",
+        ha="center",
+        va="center",
+        fontsize=9,
+        style="italic",
+        bbox=dict(boxstyle="round", facecolor="white", alpha=0.9),
+    )
+
+    # Subplot 6: Layer Breakdown - Metal1
+    ax6 = plt.subplot(2, 3, 6)
+    ax6.set_xlim(0, 22)
+    ax6.set_ylim(0, 22)
+    ax6.set_aspect("equal")
+    ax6.set_title("Layer 5: Metal1", fontsize=12, fontweight="bold")
+    ax6.axis("off")
+
+    # Draw Metal1 rails
+    vdd_rail6 = patches.Rectangle(
+        (0, 19),
+        22,
+        2,
+        linewidth=2,
+        edgecolor="#000080",
+        facecolor=layer_colors["metal1"],
+        alpha=0.9,
+    )
+    ax6.add_patch(vdd_rail6)
+    ax6.text(
+        11,
+        20,
+        "VDD",
+        ha="center",
+        va="center",
+        fontsize=11,
+        fontweight="bold",
+        color="white",
+    )
+
+    vss_rail6 = patches.Rectangle(
+        (0, -1),
+        22,
+        2,
+        linewidth=2,
+        edgecolor="#000080",
+        facecolor=layer_colors["metal1"],
+        alpha=0.9,
+    )
+    ax6.add_patch(vss_rail6)
+    ax6.text(
+        11,
+        0,
+        "VSS",
+        ha="center",
+        va="center",
+        fontsize=11,
+        fontweight="bold",
+        color="white",
+    )
+
+    # Draw output connection (extended to connect with drain contacts)
+    output_6 = patches.Rectangle(
+        (15, 3.5),
+        4,
+        12.5,
+        linewidth=2,
+        edgecolor="#000080",
+        facecolor=layer_colors["metal1"],
+        alpha=0.7,
+    )
+    ax6.add_patch(output_6)
+    ax6.text(
+        17,
+        10,
+        "OUT",
+        ha="center",
+        va="center",
+        fontsize=10,
+        fontweight="bold",
+        color="white",
+        rotation=90,
+    )
+
+    # Draw Metal1 connections from VDD to PMOS source
+    vdd_to_pmos_6_1 = patches.Rectangle(
+        (6, 15.5),
+        1,
+        3.5,
+        linewidth=1,
+        edgecolor="#000080",
+        facecolor=layer_colors["metal1"],
+        alpha=0.8,
+    )
+    ax6.add_patch(vdd_to_pmos_6_1)
+
+    # Draw Metal1 connections from VSS to NMOS source
+    vss_to_nmos_6_1 = patches.Rectangle(
+        (6, -0.5),
+        1,
+        4.5,
+        linewidth=1,
+        edgecolor="#000080",
+        facecolor=layer_colors["metal1"],
+        alpha=0.8,
+    )
+    ax6.add_patch(vss_to_nmos_6_1)
+
+    # Draw Metal1 connections from OUTPUT to PMOS and NMOS drains (right side)
+    out_to_pmos_drain_6 = patches.Rectangle(
+        (15, 14.5),
+        2,
+        1,
+        linewidth=1,
+        edgecolor="#000080",
+        facecolor=layer_colors["metal1"],
+        alpha=0.8,
+    )
+    ax6.add_patch(out_to_pmos_drain_6)
+    out_to_nmos_drain_6 = patches.Rectangle(
+        (15, 4),
+        2,
+        1,
+        linewidth=1,
+        edgecolor="#000080",
+        facecolor=layer_colors["metal1"],
+        alpha=0.8,
+    )
+    ax6.add_patch(out_to_nmos_drain_6)
+
+    ax6.text(
+        11,
+        11,
+        "METAL1 (GDS 49)\nWidth: 3λ (1.5μm)",
+        ha="center",
+        va="center",
+        fontsize=9,
+        style="italic",
+        bbox=dict(boxstyle="round", facecolor="white", alpha=0.9),
+    )
+
+    plt.tight_layout()
+    st.pyplot(fig)
+    plt.close()
+
+    st.markdown("---")
+
+    # Additional view: Cross-section - PMOS Only
+    st.markdown("### Cross-Sectional View: PMOS (P-Channel) Device")
+    st.markdown("Left-to-right view through the P-Channel transistor structure")
+
+    fig2, ax_cross = plt.subplots(figsize=(16, 10))
+    ax_cross.set_xlim(-1, 20)
+    ax_cross.set_ylim(-2, 14)
+    ax_cross.set_aspect("equal")
+    ax_cross.axis("off")
+
+    # Layer colors (reuse existing)
+    layer_colors = {
+        "n_well": "#FFD700",
+        "p_plus": "#FFB6C1",
+        "poly": "#FF1493",
+        "contact": "#000000",
+        "metal1": "#4682B4",
+    }
+
+    # Draw P-Type Substrate (bottom layer)
+    substrate = patches.Rectangle(
+        (-1, -2),
+        22,
+        3,
+        linewidth=2,
+        edgecolor="#8B4513",
+        facecolor="#F5DEB3",
+        alpha=0.6,
+    )
+    ax_cross.add_patch(substrate)
+    ax_cross.text(
+        10,
+        -0.5,
+        "P-TYPE SILICON SUBSTRATE",
+        ha="center",
+        va="center",
+        fontsize=12,
+        fontweight="bold",
+        color="#8B4513",
+    )
+
+    # Draw N-Well (bulk for PMOS)
+    n_well = patches.Rectangle(
+        (0, 1),
+        20,
+        3,
+        linewidth=2,
+        edgecolor="#DAA520",
+        facecolor=layer_colors["n_well"],
+        alpha=0.8,
+    )
+    ax_cross.add_patch(n_well)
+    ax_cross.text(
+        10,
+        2.5,
+        "N-WELL (BULK TERMINAL - Connect to VDD)",
+        ha="center",
+        va="center",
+        fontsize=11,
+        fontweight="bold",
+        color="#8B4513",
+    )
+
+    # Draw PMOS P+ Source (left side)
+    p_source = patches.Rectangle(
+        (1, 4),
+        4,
+        3,
+        linewidth=2,
+        edgecolor="#C71585",
+        facecolor=layer_colors["p_plus"],
+        alpha=0.9,
+    )
+    ax_cross.add_patch(p_source)
+    ax_cross.text(
+        3,
+        5.5,
+        "P+ SOURCE\n(P+ Diffusion)",
+        ha="center",
+        va="center",
+        fontsize=9,
+        fontweight="bold",
+        color="#8B0000",
+    )
+
+    # Draw PMOS P+ Drain (right side)
+    p_drain = patches.Rectangle(
+        (15, 4),
+        4,
+        3,
+        linewidth=2,
+        edgecolor="#C71585",
+        facecolor=layer_colors["p_plus"],
+        alpha=0.9,
+    )
+    ax_cross.add_patch(p_drain)
+    ax_cross.text(
+        17,
+        5.5,
+        "P+ DRAIN\n(P+ Diffusion)",
+        ha="center",
+        va="center",
+        fontsize=9,
+        fontweight="bold",
+        color="#8B0000",
+    )
+
+    # Draw Channel region (between source and drain)
+    channel = patches.Rectangle(
+        (5, 4),
+        10,
+        0.3,
+        linewidth=1,
+        edgecolor="#006400",
+        facecolor="#90EE90",
+        alpha=0.7,
+    )
+    ax_cross.add_patch(channel)
+    ax_cross.text(
+        10,
+        4.15,
+        "CHANNEL",
+        ha="center",
+        va="center",
+        fontsize=8,
+        style="italic",
+        color="#006400",
+    )
+
+    # Draw Gate Oxide (thin layer above channel)
+    oxide = patches.Rectangle(
+        (5.5, 4.3),
+        9,
+        0.2,
+        linewidth=1,
+        edgecolor="#696969",
+        facecolor="#E0E0E0",
+        alpha=0.9,
+    )
+    ax_cross.add_patch(oxide)
+    ax_cross.text(
+        10,
+        4.5,
+        "GATE OXIDE (SiO₂)",
+        ha="center",
+        va="center",
+        fontsize=8,
+        style="italic",
+        color="#696969",
+    )
+
+    # Draw Poly Gate (on top of oxide - extends full width of gate oxide)
+    poly_gate = patches.Rectangle(
+        (5.5, 4.6),
+        9,
+        3.5,
+        linewidth=2,
+        edgecolor="#8B0000",
+        facecolor=layer_colors["poly"],
+        alpha=0.9,
+    )
+    ax_cross.add_patch(poly_gate)
+    ax_cross.text(
+        10,
+        6.5,
+        "POLY GATE",
+        ha="center",
+        va="center",
+        fontsize=9,
+        fontweight="bold",
+        color="white",
+    )
+    ax_cross.text(
+        10,
+        9,
+        "Gate Input\n(Controls Channel)",
+        ha="center",
+        va="center",
+        fontsize=8,
+        style="italic",
+        bbox=dict(boxstyle="round,pad=0.3", facecolor="yellow", alpha=0.7),
+    )
+
+    # Draw Contact to Source
+    contact_s = patches.Rectangle(
+        (2, 7.2),
+        1.5,
+        1.5,
+        linewidth=1,
+        edgecolor="black",
+        facecolor=layer_colors["contact"],
+    )
+    ax_cross.add_patch(contact_s)
+    ax_cross.text(
+        2.75, 9.5, "CONTACT", ha="center", va="center", fontsize=8, fontweight="bold"
+    )
+
+    # Draw Contact to Drain
+    contact_d = patches.Rectangle(
+        (16, 7.2),
+        1.5,
+        1.5,
+        linewidth=1,
+        edgecolor="black",
+        facecolor=layer_colors["contact"],
+    )
+    ax_cross.add_patch(contact_d)
+    ax_cross.text(
+        16.75, 9.5, "CONTACT", ha="center", va="center", fontsize=8, fontweight="bold"
+    )
+
+    # Draw Metal1 connections
+    metal_vdd = patches.Rectangle(
+        (-0.5, 9),
+        7,
+        1.5,
+        linewidth=2,
+        edgecolor="#000080",
+        facecolor=layer_colors["metal1"],
+        alpha=0.8,
+    )
+    ax_cross.add_patch(metal_vdd)
+    ax_cross.text(
+        3,
+        9.75,
+        "METAL1 - VDD",
+        ha="center",
+        va="center",
+        fontsize=10,
+        fontweight="bold",
+        color="white",
+    )
+
+    metal_output = patches.Rectangle(
+        (14.5, 9),
+        7,
+        1.5,
+        linewidth=2,
+        edgecolor="#000080",
+        facecolor=layer_colors["metal1"],
+        alpha=0.8,
+    )
+    ax_cross.add_patch(metal_output)
+    ax_cross.text(
+        18,
+        9.75,
+        "METAL1 - OUT",
+        ha="center",
+        va="center",
+        fontsize=10,
+        fontweight="bold",
+        color="white",
+    )
+
+    # Add title and legend area
+    ax_cross.text(
+        10,
+        13,
+        "PMOS (P-Channel MOSFET) Cross-Section",
+        ha="center",
+        va="center",
+        fontsize=14,
+        fontweight="bold",
+        bbox=dict(boxstyle="round,pad=0.5", facecolor="lightblue", alpha=0.8),
+    )
+
+    # Add operation note
+    ax_cross.text(
+        10,
+        12,
+        "Operation: Gate LOW (0V) → Channel conducts → VDD flows to Output",
+        ha="center",
+        va="center",
+        fontsize=10,
+        style="italic",
+        color="#333",
+    )
+
+    plt.tight_layout()
+    st.pyplot(fig2)
+    plt.close()
+
+
+def inverter_layout_intro_app():
+    """Introduction to layout of an Inverter - Educational guide for CMOS inverter layout design"""
+    st.markdown("### ⚡ Introduction to Layout of an Inverter")
+    st.markdown(
+        "Comprehensive Guide to CMOS Inverter Layout Design in SCMOS SUBM Technology"
+    )
+
+    # Hero section with visual appeal
+    st.markdown(
+        """
+        <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 20px; border-radius: 10px; margin-bottom: 20px;">
+            <h2 style="color: white; margin: 0; text-align: center;">CMOS Inverter Layout Mastery</h2>
+            <p style="color: white; text-align: center; margin: 10px 0 0 0;">
+                Learn to design efficient, compact, and manufacturable inverter layouts
+            </p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    # Overview cards
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.markdown(
+            """
+            <div style="background-color: #e3f2fd; padding: 15px; border-radius: 8px; border-left: 4px solid #2196F3;">
+                <h4 style="margin: 0; color: #1976d2;">🔧 Basic Structure</h4>
+                <p style="margin: 8px 0 0 0; font-size: 14px;">
+                    PMOS & NMOS transistors with shared gate and complementary design
+                </p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    with col2:
+        st.markdown(
+            """
+            <div style="background-color: #f3e5f5; padding: 15px; border-radius: 8px; border-left: 4px solid #9c27b0;">
+                <h4 style="margin: 0; color: #7b1fa2;">📐 Layout Efficiency</h4>
+                <p style="margin: 8px 0 0 0; font-size: 14px;">
+                    Shared contacts, compact routing, and optimal area utilization
+                </p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    with col3:
+        st.markdown(
+            """
+            <div style="background-color: #e8f5e9; padding: 15px; border-radius: 8px; border-left: 4px solid #4caf50;">
+                <h4 style="margin: 0; color: #388e3c;">✅ DRC Clean</h4>
+                <p style="margin: 8px 0 0 0; font-size: 14px;">
+                    Meeting all design rules for successful manufacturing
+                </p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    st.markdown("---")
+
+    # Inverter Schematic Section
+    with st.expander("📊 Inverter Schematic & Concept", expanded=True):
+        st.markdown("""
+        #### CMOS Inverter Circuit
+        
+        A CMOS inverter consists of two complementary transistors:
+        
+        ```
+              VDD (Power)
+                │
+           ┌────┴────┐
+           │   PMOS  │  (Pull-up network)
+           │  (MP1)  │
+           └────┬────┘
+                │
+           ┌────┴────┐  Output (Vout)
+           │         │
+           │   IN    │  (Input - Gate)
+           │         │
+           └────┬────┘
+                │
+           ┌────┴────┐
+           │   NMOS  │  (Pull-down network)
+           │  (MN1)  │
+           └────┬────┘
+                │
+              VSS (Ground)
+        ```
+        
+        **Key Characteristics:**
+        - **PMOS**: Connected to VDD (pull-up), turns ON when input is LOW
+        - **NMOS**: Connected to VSS (pull-down), turns ON when input is HIGH
+        - **Shared Gate**: Both transistors share the same input signal
+        - **Complementary Operation**: Only one transistor is ON at a time
+        - **Zero Static Power**: No current path from VDD to VSS in steady state
+        """)
+
+        st.markdown("""
+        #### Truth Table
+        
+        | Input (Vin) | PMOS State | NMOS State | Output (Vout) |
+        |-------------|------------|------------|---------------|
+        | LOW (0)     | ON         | OFF        | HIGH (1) → VDD|
+        | HIGH (1)    | OFF        | ON         | LOW (0) → VSS |
+        
+        **Logic Function**: Vout = NOT(Vin) or Vout = Vin̄
+        """)
+
+    st.markdown("---")
+
+    # Layout Structure Section
+    with st.expander("🏗️ Layout Structure & Floorplan", expanded=True):
+        st.markdown("""
+        #### Physical Layout Concept
+        
+        The inverter layout arranges transistors vertically with shared poly gate:
+        
+        ```
+        Top View (Simplified):
+        
+        ┌────────────────────────────────────────────────────┐
+        │                                                    │
+        │  ┌────────────────────────────────────────────┐    │
+        │  │           N_WELL (P-substrate tap)         │    │ ← N-Well
+        │  │  ┌──────────────────────────────────────┐  │    │
+        │  │  │  ACTIVE      PMOS    ACTIVE          │  │    │ ← P+ Diffusion
+        │  │  │  (Source)    │Gate│   (Drain)        │  │    │
+        │  │  │     ●────────┼────┼────────●         │  │    │
+        │  │  └──────────────┼────┼──────────────────┘  │    │
+        │  │                 │POLY│                     │    │ ← Shared Gate
+        │  │  ┌──────────────┼────┼──────────────────┐  │    │
+        │  │  │  ACTIVE      │    │   ACTIVE         │  │    │ ← N+ Diffusion
+        │  │  │  (Drain)     │    │   (Source)       │  │    │
+        │  │  │     ●────────┼────┼────────●         │  │    │
+        │  │  │              NMOS │                  │  │    │
+        │  │  └──────────────────────────────────────┘  │    │
+        │  └────────────────────────────────────────────┘    │
+        │                                                    │
+        └────────────────────────────────────────────────────┘
+        
+        Side View (Cross-Section):
+        
+                 VDD Contact              Output Contact        VSS Contact
+                      │                        │                   │
+                      ▼                        ▼                   ▼
+        ┌─────────────┬──────────────┬─────────┬────────┬─────────┐
+        │   METAL1    │    METAL1    │  METAL1 │ METAL1 │  METAL1 │
+        │   (Power)   │   (Power)    │ (Output)│(Output)│ (Ground)│
+        ├─────────────┼──────────────┼─────────┼────────┼─────────┤
+        │   VIA       │    VIA       │   VIA   │  VIA   │   VIA   │
+        ├─────────────┼──────────────┼─────────┼────────┼─────────┤
+        │   POLY      │    POLY      │  POLY   │ POLY   │   POLY  │
+        │   (Gate)    │   (Gate)     │ (Gate)  │ (Gate) │  (Gate) │
+        ├─────────────┼──────────────┼─────────┼────────┼─────────┤
+        │   N_WELL    │   P+ ACTIVE  │   POLY  │N+ACTIV │   P_WELL│
+        │   (Well)    │  (PMOS S/D)  │ (Gate)  │(NMOS)  │  (Sub)  │
+        └─────────────┴──────────────┴─────────┴────────┴─────────┘
+        ```
+        """)
+
+        st.markdown("""
+        #### Key Layout Features:
+        
+        1. **Shared Poly Gate**: Both PMOS and NMOS share the same polysilicon gate
+           - Reduces gate resistance
+           - Ensures identical gate signals
+           - Minimizes area
+        
+        2. **Complementary Well Structure**:
+           - PMOS sits in N-Well (connected to VDD)
+           - NMOS sits in P-Substrate/P-Well (connected to VSS)
+           - Proper well contacts ensure latch-up immunity
+        
+        3. **Source/Drain Arrangement**:
+           - PMOS Source → VDD (top)
+           - PMOS Drain → Output (middle)
+           - NMOS Drain → Output (middle)
+           - NMOS Source → VSS (bottom)
+        
+        4. **Metal1 Connections**:
+           - Horizontal routing for power rails (VDD at top, VSS at bottom)
+           - Vertical routing for output connection
+        """)
+
+    st.markdown("---")
+
+    # Layer-by-Layer Guide
+    with st.expander("🎨 Layer-by-Layer Layout Guide"):
+        st.markdown("""
+        #### Step-by-Step Layer Construction
+        
+        **Step 1: Substrate & Well Definition**
+        ```
+        Layer: N_WELL (GDS 42)
+        ┌────────────────────────────────────────┐
+        │                                        │
+        │      ┌──────────────────────────┐      │
+        │      │       N_WELL             │      │  ← Encloses PMOS
+        │      │                          │      │     Connect to VDD
+        │      └──────────────────────────┘      │
+        │                                        │
+        └────────────────────────────────────────┘
+        ```
+        - Draw N-Well polygon for PMOS area
+        - Ensure sufficient well-to-well spacing (18λ for different potential)
+        - Add well contacts (P+ diffusion in N-Well)
+        
+        **Step 2: Active Area (Diffusion)**
+        ```
+        Layer: ACTIVE (GDS 43) + P_PLUS_SELECT (44) + N_PLUS_SELECT (45)
+        
+        P+ Active (PMOS)          N+ Active (NMOS)
+        ┌──────────┐              ┌──────────┐
+        │  Source  │              │  Drain   │
+        │    ●     │              │    ●     │
+        └────┬─────┘              └────┬─────┘
+             │                         │
+             │      Shared Gate        │
+             └─────────┬───────────────┘
+                       │
+             ┌─────────┴───────────┐
+             │      N+ Source      │
+             │         ●           │
+             └─────────────────────┘
+        ```
+        - Create ACTIVE regions for source/drain
+        - Apply P_PLUS_SELECT for PMOS (in N-Well)
+        - Apply N_PLUS_SELECT for NMOS (in P-Substrate)
+        - Minimum active width: 3λ, spacing: 3λ
+        
+        **Step 3: Gate Poly Definition**
+        ```
+        Layer: POLY (GDS 46)
+        
+              ┌──────────────────┐
+              │                  │
+              │    POLY GATE     │  ← Width: 2λ (1.0μm @ λ=0.5μm)
+              │    ━━━━━━━━━━    │    Length: L (e.g., 0.5μm)
+              │                  │    Extends 2λ beyond active
+              └──────────────────┘
+        ```
+        - Draw poly gate perpendicular to diffusion
+        - Poly overlaps active by 2λ minimum
+        - Active overlaps poly by 3λ minimum
+        - Gate length determines transistor L
+        
+        **Step 4: Contacts**
+        ```
+        Layer: CONTACT (25) for Active, POLY_CONTACT (47) for Poly
+        
+        ┌─────────┐
+        │    ■    │  ← Contact (2λ × 2λ)
+        │         │     Centered on active
+        ├─────────┤     Spacing: 3λ minimum
+        │    ■    │
+        └─────────┘
+        
+        Requirements:
+        - Contact size: 2λ × 2λ (exact)
+        - Active overlap: 1.5λ minimum
+        - Poly overlap: 1.5λ minimum  
+        - Contact spacing: 3λ minimum
+        - Poly-to-contact spacing: 2λ minimum
+        ```
+        
+        **Step 5: Metal1 Interconnect**
+        ```
+        Layer: METAL1 (GDS 49)
+        
+        VDD Rail (Top)             Output (Middle)          VSS Rail (Bottom)
+        ━━━━━━━━━━━━━━━━━━━━━━━━     │       ━━━━━━━━━━━━━━━━━━━━━━━━
+                                   ━━┿━━
+                                     │
+                                   ──┼──
+                                     │
+        ┌─────────┬────────┬─────────┼─────────┬────────┬─────────┐
+        │   ●     │        │    ●    │    ●    │        │    ●    │
+        │ Contact │        │ Contact │ Contact │        │ Contact │
+        │  (VDD)  │        │  (PMOS  │  (NMOS  │        │  (VSS)  │
+        │         │        │ Source) │ Drain)  │        │         │
+        └─────────┴────────┴─────────┴─────────┴────────┴─────────┘
+        
+        Design Rules:
+        - Metal1 width: 3λ minimum
+        - Metal1 spacing: 3λ minimum
+        - Metal1 overlap contact: 1λ minimum
+        ```
+        
+        **Step 6: Input Connection (Optional - Metal2)**
+        ```
+        Layer: METAL2 (GDS 51) + VIA (50)
+        
+             Input Signal
+                 │
+                 ▼
+             ┌────────┐
+             │ METAL2 │  ← Input routed on Metal2
+             └───┬────┘
+                 │
+                VIA
+                 │
+             ┌───┴────┐
+             │ METAL1 │
+             └───┬────┘
+                 │
+              POLY_GATE
+        ```
+        """)
+
+    st.markdown("---")
+
+    # Design Considerations
+    with st.expander("⚠️ Critical Design Considerations"):
+        st.markdown("""
+        #### Layout Matching & Symmetry
+        
+        **1. Gate Matching:**
+        - PMOS and NMOS gates must be identical in length
+        - Shared poly ensures no gate misalignment
+        - Gate width ratio (Wp/Wn) typically 2:1 to 3:1
+        
+        **2. Source/Drain Symmetry:**
+        ```
+        Balanced Layout (Good):
+        ┌─────────┬────────┬─────────┐
+        │  Source │  Gate  │  Drain  │
+        │   PMOS  │        │  PMOS   │
+        └────┬────┴────────┴────┬────┘
+             │                  │
+             │    Output        │
+             └────────┬─────────┘
+                      │
+             ┌────────┴─────────┐
+             │     NMOS Drain   │
+        ┌────┴────────┬─────────┴────┐
+        │  NMOS Gate  │  NMOS Source │
+        │             │              │
+        └─────────────┴──────────────┘
+        ```
+        
+        **3. Well Contact Placement:**
+        - Place P+ well contacts near PMOS (connect to VDD)
+        - Place N+ substrate contacts near NMOS (connect to VSS)
+        - Prevent latch-up by proper guard rings
+        - Well contact to active spacing: 6λ
+        
+        **4. Electromigration Considerations:**
+        - Widen metal for high-current paths
+        - Use multiple vias for current distribution
+        - Consider Metal2/Metal3 for power distribution in large inverters
+        
+        **5. Parasitic Minimization:**
+        - Keep source/drain areas compact
+        - Minimize poly gate extension (reduces fringing capacitance)
+        - Use silicided poly for reduced gate resistance
+        """)
+
+    st.markdown("---")
+
+    # Layout Metrics & Sizing
+    with st.expander("📏 Layout Metrics & Sizing"):
+        st.markdown("""
+        #### Typical Inverter Dimensions (λ = 0.5μm)
+        
+        **Minimum Size Inverter (Wn = 3μm, Wp = 6μm):**
+        
+        | Parameter | Value (λ) | Value (μm) | Notes |
+        |-----------|-----------|------------|-------|
+        | Total Width | ~30λ | ~15μm | Depends on Wp/Wn |
+        | Total Height | ~25λ | ~12.5μm | VDD to VSS rails |
+        | Gate Length (L) | 2λ | 1.0μm | Both transistors |
+        | NMOS Width (Wn) | 6λ | 3.0μm | Minimum typical |
+        | PMOS Width (Wp) | 12λ | 6.0μm | 2× Wn for matching |
+        | Cell Area | ~750λ² | ~187μm² | Rough estimate |
+        
+        **Layout Efficiency Metrics:**
+        
+        1. **Transistor Density**: Transistor count / Cell area
+           - Target: Maximize by compact arrangement
+        
+        2. **Utilization Factor**: Active area / Total cell area
+           - Typical: 40-60% for standard cells
+        
+        3. **Aspect Ratio**: Width / Height
+           - Target: Close to 1:1 or 2:1 for easy tiling
+        
+        **Scaling Considerations:**
+        ```
+        For β = Wp/Wn = 2 (balanced rise/fall times):
+        
+        If Wn = 3μm (6λ), then Wp = 6μm (12λ)
+        
+        Area impact:
+        - PMOS occupies ~2× the width of NMOS
+        - Total width ≈ 3× minimum NMOS width
+        - Trade-off: Speed vs. Area vs. Power
+        ```
+        """)
+
+    st.markdown("---")
+
+    # Advanced Layout Techniques
+    with st.expander("🔬 Advanced Layout Techniques"):
+        st.markdown("""
+        #### 1. Multi-Finger Transistor Layout
+        
+        For wide transistors, use multi-finger layout to reduce S/D capacitance:
+        
+        ```
+        Single Wide Transistor (Inefficient):
+        ┌────────────────────────────────────┐
+        │         Very Wide ACTIVE           │  ← Large Cjs
+        │    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━    │
+        └────────────────────────────────────┘
+        
+        Multi-Finger Layout (Efficient):
+        ┌───────┬───────┬───────┬───────┐
+        │ ACTIVE│  POLY │ ACTIVE│  POLY │
+        │  S/D  │ Gate1 │  D/S  │ Gate2 │  ← Shared S/D reduces cap
+        ├───────┼───────┼───────┼───────┤
+        │  S/D  │  POLY │  D/S  │  POLY │
+        │       │ Gate3 │       │ Gate4 │
+        └───────┴───────┴───────┴───────┘
+        
+        Benefits:
+        - Reduces source/drain capacitance by sharing
+        - Improves aspect ratio
+        - Better current distribution
+        ```
+        
+        #### 2. Guard Rings for Latch-Up Prevention
+        
+        ```
+        Layout with Guard Rings:
+        
+        ┌───────────────────────────────────┐
+        │     N_WELL (with P+ Guard Ring)   │
+        │  ┌───────────────────────────────┐│
+        │  │      PMOS Transistor          ││
+        │  └───────────────────────────────┘│
+        │         │P+ GR│ ← P+ Guard Ring   │
+        └─────────┼─────┼───────────────────┘
+                  │     │
+        ──────────┼─────┼─────────── P+ Substrate Contact Ring
+                  │     │
+        ┌─────────┼─────┼───────────────────┐
+        │         │N+ GR│ ← N+ Guard Ring   │
+        │  ┌──────┴─────┴───────────────┐   │
+        │  │      NMOS Transistor       │   │
+        │  └────────────────────────────┘   │
+        └───────────────────────────────────┘
+        
+        Guard Ring Requirements:
+        - P+ ring around NMOS (connect to VSS)
+        - N+ ring around PMOS (connect to VDD)
+        - Width: Typically 3-6λ
+        - Spacing: Follow well spacing rules
+        ```
+        
+        #### 3. Power Distribution Networks
+        
+        ```
+        Multi-Level Power Routing:
+        
+        Metal3 (Global Power):
+        ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ VDD
+        
+        Metal2 (Intermediate):
+            │         │         │
+           VIA       VIA       VIA
+            │         │         │
+        
+        Metal1 (Local Connections):
+        ━━━━━┷━━━━━━━━┷━━━━━━━━┷━━━━━ VDD Local
+             │        │        │
+           [Inverter Cells]
+             │        │        │
+        ━━━━━┷━━━━━━━━┷━━━━━━━━┷━━━━━ VSS Local
+        
+        Best Practices:
+        - Wide metal for power (6λ minimum for Metal1)
+        - Multiple via stacks (2×2 or 3×3)
+        - Mesh topology for large blocks
+        ```
+        
+        #### 4. Dummy Poly for Lithography
+        
+        ```
+        Layout with Dummy Poly:
+        
+        ┌─────────────────────────────────┐
+        │ ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓   │ ← Dummy Poly
+        │                                 │
+        │    ┌─────────────────────┐      │
+        │    │   Active Poly       │      │ ← Real Gate
+        │    │   (Transistor)      │      │
+        │    └─────────────────────┘      │
+        │                                 │
+        │ ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓   │ ← Dummy Poly
+        └─────────────────────────────────┘
+        
+        Purpose:
+        - Improve poly etch uniformity
+        - Maintain consistent poly density
+        - Better CD control
+        - Minimum spacing: Same as poly spacing rules
+        ```
+        """)
+
+    st.markdown("---")
+
+    # DRC Checklist
+    with st.expander("✅ DRC Verification Checklist"):
+        st.markdown("""
+        #### Pre-Layout Completion Checklist
+        
+        **N-Well Checks:**
+        - [ ] N-Well covers entire PMOS area
+        - [ ] N-Well to N-Well spacing (18λ for different potential)
+        - [ ] N-Well overlap of P+ active (6λ minimum)
+        - [ ] Well contacts placed and sized correctly
+        
+        **Active Area Checks:**
+        - [ ] Active width ≥ 3λ
+        - [ ] Active spacing ≥ 3λ
+        - [ ] Active to well edge ≥ 6λ (S/D) or 3λ (substrate contact)
+        - [ ] N+ and P+ select layers correct
+        
+        **Poly Gate Checks:**
+        - [ ] Poly width ≥ 2λ
+        - [ ] Poly spacing ≥ 3λ
+        - [ ] Poly overlap of active ≥ 2λ
+        - [ ] Active overlap of poly ≥ 3λ
+        - [ ] Field poly to active ≥ 1λ
+        
+        **Contact Checks:**
+        - [ ] Contact size exactly 2λ × 2λ
+        - [ ] Contact spacing ≥ 3λ
+        - [ ] Active overlap of contact ≥ 1.5λ
+        - [ ] Poly overlap of contact ≥ 1.5λ
+        - [ ] Contact to gate spacing ≥ 2λ
+        
+        **Metal Checks:**
+        - [ ] Metal1 width ≥ 3λ
+        - [ ] Metal1 spacing ≥ 3λ
+        - [ ] Metal1 overlap of contact ≥ 1λ
+        - [ ] Metal1 wide spacing (6λ for width > 10λ)
+        - [ ] Vias sized and spaced correctly
+        
+        **Connectivity Checks:**
+        - [ ] PMOS source connected to VDD
+        - [ ] NMOS source connected to VSS
+        - [ ] PMOS and NMOS drains connected together (Output)
+        - [ ] Shared gate connected to Input
+        - [ ] Well and substrate properly biased
+        
+        **LVS Checks:**
+        - [ ] Schematic matches layout netlist
+        - [ ] Transistor W/L ratios correct
+        - [ ] No floating nets
+        - [ ] All terminals connected properly
+        """)
+
+    st.markdown("---")
+
+    # Summary and Tips
+    st.markdown(
+        """
+        <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 20px; border-radius: 10px; margin-top: 20px;">
+            <h3 style="color: white; margin: 0;">🎯 Key Takeaways</h3>
+            <ul style="color: white; margin: 10px 0;">
+                <li>Shared poly gate is the foundation of compact inverter layout</li>
+                <li>Proper well and substrate contacts prevent latch-up</li>
+                <li>Follow all DRC rules to ensure manufacturability</li>
+                <li>Balance area, speed, and power trade-offs</li>
+                <li>Use advanced techniques (multi-finger, guard rings) for high-performance designs</li>
+            </ul>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.markdown("---")
+
+    # Mask-Level Layout Visualization
+    with st.expander("🔍 Mask-Level Layout Visualization", expanded=True):
+        st.markdown("### Realistic Mask-Level Layout Views")
+        st.markdown("Generated mask layouts showing actual manufacturing layers")
+
+        # Generate mask layout images
+        generate_inverter_layout_images()
+
+
+# ============== MAIN APP ==============
+
+
+def main():
+    st.markdown(
+        '<div class="main-header">🔧 MOSIS_SCMOS PDK PV Automation QA & Validation Dashboard</div>',
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        '<div style="text-align: center; color: #666; margin-bottom: 2rem;">SCMOS SUBM Technology - 3-Metal Process Support</div>',
+        unsafe_allow_html=True,
+    )
+
+    # Streamlit logo at top of sidebar
+    st.sidebar.markdown(
+        """
+        <div style="text-align: center; padding: 2px; margin-top: 0px;">
+            <img src="https://streamlit.io/images/brand/streamlit-mark-color.png" 
+                 alt="Streamlit Logo" 
+                 style="width: 60px; height: auto; opacity: 0.8; margin-top: 0px;">
+            <div style="margin-top: 2px; font-size: 12px; color: #666; font-weight: bold;">
+                Streamlit Applications
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.sidebar.markdown("---")
+
+    # Navigation
+    app_mode = st.sidebar.radio(
+        "Select Application",
+        [
+            "QA Error Cell Generator",
+            "Calibre DRC Deck Generator",
+            "Calibre LVS Deck Generator",
+            "Calibre PEX/xRC Deck Generator",
+            "Calibre OPC Deck Generator",
+            "Layer Map Reference",
+            "Design Layout Manual Reference",
+            "Inverter Layout Introduction",
+        ],
+    )
+
+    # System Information Section at bottom of sidebar
+
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("### 🖥️ System Information")
+
+    import getpass
+    import socket
+    from datetime import datetime as dt
+
+    # Get system info
+    username = getpass.getuser()
+    hostname = socket.gethostname()
+    current_date = dt.now().strftime("%A %m-%d-%Y")
+
+    # Display in styled containers
+    st.sidebar.markdown(
+        f"""
+        <div style="background-color: #f0f2f6; padding: 10px; border-radius: 5px; margin-bottom: 8px;">
+            <strong>👤 Username:</strong><br>
+            <span style="color: #1f77b4; font-family: monospace;">{username}</span>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.sidebar.markdown(
+        f"""
+        <div style="background-color: #f0f2f6; padding: 10px; border-radius: 5px; margin-bottom: 8px;">
+            <strong>🌐 Hostname:</strong><br>
+            <span style="color: #1f77b4; font-family: monospace;">{hostname}</span>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.sidebar.markdown(
+        f"""
+        <div style="background-color: #f0f2f6; padding: 10px; border-radius: 5px;">
+            <strong>📅 Date:</strong><br>
+            <span style="color: #1f77b4; font-family: monospace;">{current_date}</span>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    if app_mode == "QA Error Cell Generator":
+        qa_generator_app()
+    elif app_mode == "Calibre DRC Deck Generator":
+        calibre_generator_app()
+    elif app_mode == "Calibre LVS Deck Generator":
+        calibre_lvs_generator_app()
+    elif app_mode == "Calibre PEX/xRC Deck Generator":
+        calibre_pex_generator_app()
+    elif app_mode == "Calibre OPC Deck Generator":
+        calibre_opc_generator_app()
+    elif app_mode == "Design Layout Manual Reference":
+        dlm_reference_app()
+    elif app_mode == "Inverter Layout Introduction":
+        inverter_layout_intro_app()
+    else:
+        st.markdown("### 📚 SCMOS SUBM Layer Reference")
+
+        layer_data = []
+        for name, (gds, cif) in LAYER_MAP.items():
+            layer_data.append(
+                {
+                    "Layer Name": name,
+                    "GDS Number": gds,
+                    "CIF Name": cif,
+                    "Datatype": "0",
+                }
+            )
+
+        df = pd.DataFrame(layer_data)
+        df.index = df.index + 1  # Start index from 1 instead of 0
+        st.dataframe(df, use_container_width=True)
+
+        st.markdown("### Technology Notes")
+        st.markdown("""
+        - **SCN3ME_SUBM**: Scalable CMOS N-well, 3-metal, sub-micron rules
+        - **Grid**: All geometry must be on 0.5 lambda grid
+        - **Units**: All dimensions in microns, scaled by lambda
+        - **Contacts**: Must be orthogonal (non-Manhattan geometry not allowed)
+        """)
+
+
+if __name__ == "__main__":
+    main()

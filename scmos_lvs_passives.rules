@@ -1,0 +1,370 @@
+// ============================================
+// MOSIS SCMOS Calibre LVS Rule Deck
+// Process: SCN3ME_SUBM (3-metal, 2-poly, high-res)
+// Supports: Transistors, Poly-Poly Caps, Diffusion/NWELL/Poly Resistors
+// Lambda = 0.5 um (adjust as needed)
+// ============================================
+
+// --------------------------------------------
+// 1. INPUT SPECIFICATIONS
+// --------------------------------------------
+LAYOUT SYSTEM GDSII
+LAYOUT PATH "./layout.gds"
+LAYOUT PRIMARY "top_cell"
+LAYOUT CASE YES
+
+SOURCE SYSTEM SPICE
+SOURCE PATH "./schematic.sp"
+SOURCE PRIMARY "top_cell"
+SOURCE CASE YES
+
+// --------------------------------------------
+// 2. LAYER DEFINITIONS - SCMOS SCN3ME_SUBM
+// --------------------------------------------
+LAYER N_WELL          42
+LAYER P_WELL          41
+LAYER ACTIVE          43
+LAYER N_SELECT        45
+LAYER P_SELECT        44
+LAYER POLY            46
+LAYER POLY2           56      // Upper electrode for capacitors
+LAYER HI_RES_IMPLANT  34      // High resistance implant for poly resistors
+LAYER POLY_CAP1       28      // Alternative: POLY_CAP layer (SCNPC option)
+LAYER CONTACT         25
+LAYER POLY_CONTACT    47      // Can be replaced by CONTACT
+LAYER ACTIVE_CONTACT  48      // Can be replaced by CONTACT
+LAYER POLY2_CONTACT   55      // Contact to poly2
+LAYER METAL1          49
+LAYER VIA             50
+LAYER METAL2          51
+LAYER VIA2            61
+LAYER METAL3          62
+LAYER GLASS           52
+LAYER PADS            26      // Non-fab layer for pads
+
+// --------------------------------------------
+// 3. DERIVED LAYERS - Basic Processing
+// --------------------------------------------
+
+// Active area definitions
+NPLUS  = ACTIVE AND N_SELECT
+PPLUS  = ACTIVE AND P_SELECT
+
+// Transistor channel definitions
+CHANNEL = POLY AND ACTIVE
+NCH = CHANNEL AND NPLUS
+PCH = CHANNEL AND PPLUS
+
+// Source/Drain regions
+NSD = NPLUS NOT CHANNEL
+PSD = PPLUS NOT CHANNEL
+
+// Gate poly
+GATE_POLY = POLY AND ACTIVE
+FIELD_POLY = POLY NOT ACTIVE
+
+// --------------------------------------------
+// 4. CAPACITOR LAYERS (Poly-Poly & Metal)
+// --------------------------------------------
+
+// Poly1-Poly2 Capacitor (MIM cap)
+// Bottom plate: POLY (layer 46)
+// Top plate: POLY2 (layer 56)
+// Dielectric: Thin oxide between poly layers
+POLY_CAP_BOTTOM = POLY
+POLY_CAP_TOP = POLY2
+POLY_CAP_AREA = POLY AND POLY2    // Overlap area is the capacitor
+
+// Alternative: POLY_CAP1 capacitor (SCNPC option)
+// POLY_CAP1 (28) surrounds POLY, POLY is top electrode
+// POLY_CAP1_AREA = POLY_CAP1 AND POLY
+
+// Metal-Insulator-Metal (MIM) Capacitors
+// METAL1-METAL2 cap (fringe/parallel plate)
+// METAL2-METAL3 cap
+MIM12_AREA = METAL1 AND METAL2    // Parallel plate component
+MIM23_AREA = METAL2 AND METAL3
+
+// --------------------------------------------
+// 5. RESISTOR LAYERS
+// --------------------------------------------
+
+// 5.1 POLY RESISTORS (Unsalicided)
+// Standard poly resistor (salicided block not available in SCN3ME)
+// Use HI_RES_IMPLANT to create high-resistance poly
+POLY_RES_BODY = POLY AND HI_RES_IMPLANT   // High-resistance poly region
+POLY_RES_HEAD = POLY NOT HI_RES_IMPLANT   // Low-resistance heads (contacts)
+
+// Field poly resistor (no active underneath)
+POLY_FIELD_RES = FIELD_POLY AND HI_RES_IMPLANT
+
+// 5.2 DIFFUSION RESISTORS
+// N+ diffusion resistor in P-well
+NDIFF_RES = NPLUS AND P_WELL
+// P+ diffusion resistor in N-well  
+PDIFF_RES = PPLUS AND N_WELL
+
+// 5.3 N-WELL RESISTOR
+// N-well as resistive element
+NWELL_RES = N_WELL NOT ACTIVE    // Well not occupied by devices
+
+// 5.4 POLY2 RESISTORS
+// Using second poly layer as resistor
+POLY2_RES_BODY = POLY2 AND HI_RES_IMPLANT
+POLY2_RES_HEAD = POLY2 NOT HI_RES_IMPLANT
+
+// --------------------------------------------
+// 6. CONNECTIVITY EXTRACTION
+// --------------------------------------------
+
+// Vertical connections (vias)
+CONNECT METAL1 METAL2 BY VIA
+CONNECT METAL2 METAL3 BY VIA2
+
+// Contact connections
+CONNECT METAL1 NPLUS BY CONTACT
+CONNECT METAL1 PPLUS BY CONTACT
+CONNECT METAL1 POLY BY CONTACT
+CONNECT METAL1 POLY2 BY CONTACT   // Poly2 contacted through standard contact
+
+// Well connectivity
+CONNECT N_WELL PPLUS              // N-well connects to P+ substrate contact
+CONNECT P_WELL NPLUS              // P-well connects to N+ well contact
+
+// Resistor head connectivity
+CONNECT METAL1 POLY_RES_HEAD BY CONTACT
+CONNECT METAL1 POLY2_RES_HEAD BY CONTACT
+
+// Capacitor plate connectivity (both plates accessible)
+CONNECT METAL1 POLY               // Bottom plate
+CONNECT METAL1 POLY2              // Top plate (requires poly2 contact)
+
+// --------------------------------------------
+// 7. DEVICE RECOGNITION
+// --------------------------------------------
+
+// 7.1 TRANSISTORS
+// NMOS
+DEVICE MN(NMOS) NCH {
+    POLY(G)
+    NSD(S)
+    NSD(D)
+    P_WELL(B)
+}
+
+// PMOS  
+DEVICE MP(PMOS) PCH {
+    POLY(G)
+    PSD(S)
+    PSD(D)
+    N_WELL(B)
+}
+
+// 7.2 CAPACITORS
+
+// Poly1-Poly2 Capacitor
+// C = ε₀εᵣA/tox
+// Properties: area, perimeter, bottom plate area
+DEVICE C_POLY_POLY(C) POLY_CAP_AREA {
+    POLY(C1)           // Bottom plate (Terminal 1)
+    POLY2(C2)          // Top plate (Terminal 2)
+}
+
+// Metal-Metal Capacitor (MIM12)
+// Fringe + parallel plate components
+DEVICE C_MIM12(C) MIM12_AREA {
+    METAL1(C1)
+    METAL2(C2)
+}
+
+// 7.3 RESISTORS
+
+// Poly Resistor (with HI_RES_IMPLANT)
+// Body: high-resistance poly, Heads: standard poly contacted
+DEVICE R_POLY(R) POLY_RES_BODY {
+    POLY_RES_HEAD(POS)  // Positive terminal
+    POLY_RES_HEAD(NEG)  // Negative terminal
+}
+
+// N+ Diffusion Resistor
+DEVICE R_NDIFF(R) NDIFF_RES {
+    NPLUS(POS)
+    NPLUS(NEG)
+    P_WELL(BULK)        // Bulk terminal for isolation
+}
+
+// P+ Diffusion Resistor  
+DEVICE R_PDIFF(R) PDIFF_RES {
+    PPLUS(POS)
+    PPLUS(NEG)
+    N_WELL(BULK)
+}
+
+// N-Well Resistor
+DEVICE R_NWELL(R) NWELL_RES {
+    N_WELL(POS)
+    N_WELL(NEG)
+    P_WELL(BULK)        // Isolation well
+}
+
+// Poly2 Resistor
+DEVICE R_POLY2(R) POLY2_RES_BODY {
+    POLY2_RES_HEAD(POS)
+    POLY2_RES_HEAD(NEG)
+}
+
+// --------------------------------------------
+// 8. DEVICE PROPERTIES EXTRACTION
+// --------------------------------------------
+
+// 8.1 TRANSISTOR PROPERTIES
+PROPERTY MN(NMOS) {
+    // W = 2 * Area / Perimeter (approximation)
+    W = (2 * AREA(NCH)) / (PERIMETER(NCH))
+    L = LENGTH(NCH)      // Calibre measures channel length
+    AD = AREA(NSD) * 0.5 // Area of one drain/source (approx)
+    AS = AD
+    PD = PERIMETER(NSD) * 0.5
+    PS = PD
+}
+
+PROPERTY MP(PMOS) {
+    W = (2 * AREA(PCH)) / (PERIMETER(PCH))
+    L = LENGTH(PCH)
+    AD = AREA(PSD) * 0.5
+    AS = AD
+    PD = PERIMETER(PSD) * 0.5
+    PS = PD
+}
+
+// 8.2 CAPACITOR PROPERTIES
+PROPERTY C_POLY_POLY(C) {
+    // Capacitance = Area * Cox + Perimeter * Cjsw
+    AREA = AREA(POLY_CAP_AREA)
+    PERIM = PERIMETER(POLY_CAP_AREA)
+    // Typical values for 0.5um: Cox ≈ 0.9 fF/μm²
+    // C = AREA * 0.9e-15 + PERIM * fringe_cap
+    C = AREA * 0.9e-15    // Simplified - unit: Farads
+}
+
+PROPERTY C_MIM12(C) {
+    AREA = AREA(MIM12_AREA)
+    PERIM = PERIMETER(MIM12_AREA)
+    // Metal cap: ~0.05 fF/μm² (much smaller than poly-poly)
+    C = AREA * 0.05e-15
+}
+
+// 8.3 RESISTOR PROPERTIES
+PROPERTY R_POLY(R) {
+    // R = Rsheet * (L/W)
+    // For poly with HI_RES_IMPLANT: Rsheet ≈ 100-1000 Ω/sq
+    L = LENGTH(POLY_RES_BODY)    // Measured length of resistor body
+    W = WIDTH(POLY_RES_BODY)     // Measured width
+    R = 500 * (L / W)            // Rsheet = 500 Ω/sq (example)
+}
+
+PROPERTY R_NDIFF(R) {
+    // N+ diffusion: Rsheet ≈ 50-100 Ω/sq
+    L = LENGTH(NDIFF_RES)
+    W = WIDTH(NDIFF_RES)
+    R = 80 * (L / W)
+}
+
+PROPERTY R_PDIFF(R) {
+    // P+ diffusion: Rsheet ≈ 100-150 Ω/sq
+    L = LENGTH(PDIFF_RES)
+    W = WIDTH(PDIFF_RES)
+    R = 120 * (L / W)
+}
+
+PROPERTY R_NWELL(R) {
+    // N-well: Rsheet ≈ 1000-3000 Ω/sq
+    L = LENGTH(NWELL_RES)
+    W = WIDTH(NWELL_RES)
+    R = 2000 * (L / W)
+}
+
+PROPERTY R_POLY2(R) {
+    // Poly2: Similar to poly1, adjust Rsheet as needed
+    L = LENGTH(POLY2_RES_BODY)
+    W = WIDTH(POLY2_RES_BODY)
+    R = 500 * (L / W)
+}
+
+// --------------------------------------------
+// 9. LVS COMPARISON CONTROLS
+// --------------------------------------------
+
+LVS COMPARE CASE YES
+LVS COMPARE TOLERANCE R 0.05    // 5% tolerance for resistors
+LVS COMPARE TOLERANCE C 0.10    // 10% tolerance for capacitors
+LVS COMPARE TOLERANCE L 0.01
+LVS COMPARE TOLERANCE W 0.01
+
+// Ignore specific properties if needed (for approximate matching)
+// LVS IGNORE PROPERTY MN(W) LVS IGNORE PROPERTY MP(W)
+
+// Report settings
+LVS REPORT "./lvs_report.rpt"
+LVS REPORT MAXIMUM 1000
+LVS REPORT UNITS YES
+
+// Hierarchical settings
+LVS HIERARCHY YES
+LVS SHORT PINS NO
+LVS REDUCE PARALLEL YES
+LVS REDUCE SERIES YES
+
+// Soft connection checking (well ties, etc.)
+LVS SOFTCHK YES
+
+// --------------------------------------------
+// 10. PORT AND TEXT HANDLING
+// --------------------------------------------
+
+// Text layers for net labeling
+LAYER TEXT_M1    49:1
+LAYER TEXT_M2    51:1
+LAYER TEXT_M3    62:1
+LAYER TEXT_POLY  46:1
+LAYER TEXT_POLY2 56:1
+
+ATTACH TEXT_M1 METAL1
+ATTACH TEXT_M2 METAL2
+ATTACH TEXT_M3 METAL3
+ATTACH TEXT_POLY POLY
+ATTACH TEXT_POLY2 POLY2
+
+PORT LAYER TEXT_M1 METAL1
+PORT LAYER TEXT_M2 METAL2
+PORT LAYER TEXT_M3 METAL3
+
+// --------------------------------------------
+// 11. FLAGGING AND CHECKING
+// --------------------------------------------
+
+// Check for missing wells
+LAYOUT WINDOW DEPTH PRIMARY
+DRC CHECK MAP OFF
+
+// Ensure all devices have proper well connections
+// (Calibre will flag floating wells as warnings)
+
+// --------------------------------------------
+// 12. TECHNOLOGY-SPECIFIC NOTES
+// --------------------------------------------
+
+// Sheet resistance values (Ω/sq) - adjust for your specific process:
+// POLY (salicided): ~5-10 Ω/sq
+// POLY (unsalicided/HI_RES): ~100-1000 Ω/sq  
+// N+ DIFF: ~50-80 Ω/sq
+// P+ DIFF: ~100-150 Ω/sq
+// N_WELL: ~1000-3000 Ω/sq
+// POLY2: ~20-40 Ω/sq (or higher with HI_RES)
+
+// Poly-Poly Capacitance: ~0.9-1.2 fF/μm² (for 0.5um process)
+// Gate Oxide Cap: ~3.5-4.5 fF/μm²
+
+// ============================================
+// END OF RULE DECK
+// ============================================

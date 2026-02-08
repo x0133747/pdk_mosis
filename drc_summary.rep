@@ -1,0 +1,47 @@
+
+
+==================================================================================
+=== CALIBRE::DRC-H SUMMARY REPORT
+===
+Execution Date/Time:       Sat Jan 31 14:34:16 2026
+Calibre Version:           v2018.2_33.24    Mon Jul 2 14:22:47 PDT 2018
+Rule File Pathname:        mosis_scmos_20260131_121615.drc
+Rule File Title:           
+Layout System:             GDS
+Layout Path(s):            ./input.gds
+Layout Primary Cell:       TOP_QA_ERRORS
+Current Directory:         /datastore01/pnguyen/proj/streamlit/mosis
+User Name:                 pnguyen
+Maximum Results/RuleCheck: 1000
+Maximum Result Vertices:   4096
+DRC Results Database:      drc_results.db (ASCII)
+Layout Depth:              ALL
+Text Depth:                PRIMARY
+Summary Report File:       drc_summary.rep (REPLACE)
+Geometry Flagging:         ACUTE = NO  SKEW = NO  ANGLED = NO  OFFGRID = NO
+                           NONSIMPLE POLYGON = NO  NONSIMPLE PATH = NO
+Excluded Cells:           
+CheckText Mapping:         COMMENT TEXT
+Layers:                    MEMORY-BASED
+Keep Empty Checks:         YES
+----------------------------------------------------------------------------------
+--- RUNTIME WARNINGS
+---
+----------------------------------------------------------------------------------
+--- ORIGINAL LAYER STATISTICS
+---
+LAYER N_WELL ... TOTAL Original Geometry Count = 19 (19)
+----------------------------------------------------------------------------------
+--- RULECHECK RESULTS STATISTICS
+---
+RULECHECK N_WELL_1_1 ... TOTAL Result Count = 95  (95)
+RULECHECK N_WELL_1_2 ... TOTAL Result Count = 156 (156)
+RULECHECK N_WELL_1_3 ... TOTAL Result Count = 217 (217)
+----------------------------------------------------------------------------------
+--- SUMMARY
+---
+TOTAL CPU Time:                  0
+TOTAL REAL Time:                 0
+TOTAL Original Layer Geometries: 19 (19)
+TOTAL DRC RuleChecks Executed:   3
+TOTAL DRC Results Generated:     468 (468)

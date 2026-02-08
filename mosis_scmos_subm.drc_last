@@ -1,0 +1,464 @@
+//////////////////////////////////////////////////////////////////////
+// CALIBRE DRC RULE DECK FOR MOSIS SCMOS SUBM (SCN3ME_SUBM)
+// Technology: 0.5um Scalable CMOS, 3-Metal, Sub-Micron Rules
+// Generated from: MOSIS_SCMOS_SUBM_Layout_Rules.pdf + SVRF Manual
+// Compatible with: Calibre nmDRC / nmDRC-H
+//////////////////////////////////////////////////////////////////////
+
+//////////////////////////////////////////////////////////////////////
+// SECTION 1: LAYOUT DATABASE SPECIFICATION
+//////////////////////////////////////////////////////////////////////
+
+LAYOUT SYSTEM GDSII
+LAYOUT PRIMARY "TOP_QA_ERRORS"                  // Change to your top cell name
+LAYOUT PATH "./input.gds"             // Change to your input file
+
+PRECISION 1000                        // Database precision (DBU per user unit)
+RESOLUTION 5                          // Grid resolution (0.005 um)
+
+//////////////////////////////////////////////////////////////////////
+// SECTION 2: LAYER DEFINITIONS (MOSIS SCMOS Layer Map)
+// GDS Layer Numbers from Table 1 (Page 1 of MOSIS doc)
+//////////////////////////////////////////////////////////////////////
+
+LAYER N_WELL          42
+LAYER ACTIVE          43
+LAYER POLY            46
+LAYER N_PLUS_SELECT   45
+LAYER P_PLUS_SELECT   44
+LAYER POLY2           56
+LAYER HI_RES_IMPLANT  34
+LAYER CONTACT         25
+LAYER POLY_CONTACT    47
+LAYER ACTIVE_CONTACT  48
+LAYER POLY2_CONTACT   55
+LAYER METAL1          49
+LAYER VIA             50
+LAYER METAL2          51
+LAYER VIA2            61
+LAYER METAL3          62
+LAYER GLASS           52
+LAYER PADS            26    // Non-fab layer used for highlighting pads
+
+//////////////////////////////////////////////////////////////////////
+// SECTION 3: CONNECTIVITY & TEXT HANDLING
+//////////////////////////////////////////////////////////////////////
+
+// Text attachment for labels
+ATTACH PADS METAL3
+
+// Virtual connect for substrate/well connections
+Virtual Connect Name "VDD" "VSS" "GND"
+
+//////////////////////////////////////////////////////////////////////
+// SECTION 4: DRC OUTPUT SPECIFICATION
+//////////////////////////////////////////////////////////////////////
+
+DRC RESULTS DATABASE "drc_results.db" ASCII PSEUDO
+DRC SUMMARY REPORT "drc_summary.rep"
+//pn DRC CHECK TEXT YES
+
+//////////////////////////////////////////////////////////////////////
+// SECTION 5: DESIGN RULE CHECKS
+// All dimensions in microns (lambda = 0.5um assumed, scalable)
+//////////////////////////////////////////////////////////////////////
+
+VARIABLE LAMBDA 0.5
+
+// -----------------------------------------------------------
+// 5.1 N-WELL RULES (Section 1)
+// -----------------------------------------------------------
+
+NW_WIDTH {
+  @ MOSIS Rule 1.1: Minimum width 12 lambda
+  INTERNAL N_WELL < 12 * LAMBDA
+}
+
+NW_SPACE_DIFF {
+  @ MOSIS Rule 1.2: Minimum spacing between wells at different potential 18 lambda
+//pn  EXTERNAL N_WELL N_WELL < 18 * LAMBDA OPPOSITE
+  EXTERNAL N_WELL < 18 * LAMBDA OPPOSITE
+}
+
+NW_SPACE_SAME {
+  @ MOSIS Rule 1.3: Minimum spacing between wells at same potential 6 lambda (or 0)
+//pn  EXTERNAL N_WELL N_WELL < 6 * LAMBDA OPPOSITE
+  EXTERNAL N_WELL < 6 * LAMBDA OPPOSITE
+}
+
+// Note: Rule 1.4 (0 spacing for different types) is inherent in the layout structure
+
+// -----------------------------------------------------------
+// 5.2 ACTIVE RULES (Section 2)
+// -----------------------------------------------------------
+
+ACT_WIDTH {
+  @ MOSIS Rule 2.1: Minimum width 3 lambda
+  INTERNAL ACTIVE < 3 * LAMBDA
+}
+
+ACT_SPACE {
+  @ MOSIS Rule 2.2: Minimum spacing 3 lambda
+  EXTERNAL ACTIVE ACTIVE < 3 * LAMBDA
+}
+
+ACT_TO_WELL {
+  @ MOSIS Rule 2.3: Source/drain active to well edge 6 lambda
+  ENCLOSURE N_WELL ACTIVE < 6 * LAMBDA
+}
+
+ACT_CONTACT_TO_WELL {
+  @ MOSIS Rule 2.4: Substrate/well contact active to well edge 3 lambda
+  ENCLOSURE N_WELL ACTIVE_CONTACT < 3 * LAMBDA
+  ENCLOSURE N_WELL POLY_CONTACT < 3 * LAMBDA
+}
+
+ACT_DIFF_IMP_SPACING {
+  @ MOSIS Rule 2.5: Minimum spacing between active of different implant 4 lambda
+  // This requires separate layers for N+ and P+ active
+  EXTERNAL ACTIVE ACTIVE < 4 * LAMBDA
+}
+
+// -----------------------------------------------------------
+// 5.3 POLY (POLY1) RULES (Section 3)
+// -----------------------------------------------------------
+
+POLY_WIDTH {
+  @ MOSIS Rule 3.1: Minimum width 2 lambda
+  INTERNAL POLY < 2 * LAMBDA
+}
+
+POLY_SPACE_FIELD {
+  @ MOSIS Rule 3.2: Minimum spacing over field 3 lambda
+  EXTERNAL POLY POLY < 3 * LAMBDA
+}
+
+POLY_GATE_EXTENSION {
+  @ MOSIS Rule 3.3: Minimum gate extension of active 2 lambda
+  gate = POLY AND ACTIVE
+  EXTERNAL gate POLY < 2 * LAMBDA
+}
+
+POLY_ACTIVE_EXTENSION {
+  @ MOSIS Rule 3.4: Minimum active extension of poly 3 lambda
+  gate = POLY AND ACTIVE
+  EXTERNAL gate ACTIVE < 3 * LAMBDA
+}
+
+POLY_TO_ACTIVE_FIELD {
+  @ MOSIS Rule 3.5: Minimum field poly to active 1 lambda
+  // Poly not over active should be 1 lambda away from active edges
+  gate = POLY AND ACTIVE
+  field_poly = POLY NOT gate
+  EXTERNAL field_poly ACTIVE < 1 * LAMBDA
+}
+
+// -----------------------------------------------------------
+// 5.4 IMPLANT SELECT RULES (Section 4)
+// -----------------------------------------------------------
+
+// N-Select rules
+NSEL_OVER_ACT {
+  @ MOSIS Rule 4.2: Minimum select overlap of active 2 lambda
+  ENCLOSURE ACTIVE N_PLUS_SELECT < 2 * LAMBDA
+}
+
+NSEL_OVER_CONT {
+  @ MOSIS Rule 4.3: Minimum select overlap of contact 1 lambda
+  ENCLOSURE CONTACT N_PLUS_SELECT < 1 * LAMBDA
+}
+
+NSEL_WIDTH {
+  @ MOSIS Rule 4.4: Minimum select width and spacing 2 lambda
+  INTERNAL N_PLUS_SELECT < 2 * LAMBDA
+}
+
+// P-Select rules (same as N-Select)
+PSEL_OVER_ACT {
+  @ MOSIS Rule 4.2: Minimum select overlap of active 2 lambda (P)
+  ENCLOSURE ACTIVE P_PLUS_SELECT < 2 * LAMBDA
+}
+
+PSEL_OVER_CONT {
+  @ MOSIS Rule 4.3: Minimum select overlap of contact 1 lambda (P)
+  ENCLOSURE CONTACT P_PLUS_SELECT < 1 * LAMBDA
+}
+
+PSEL_WIDTH {
+  @ MOSIS Rule 4.4: Minimum select width and spacing 2 lambda (P)
+  INTERNAL P_PLUS_SELECT < 2 * LAMBDA
+}
+
+// Select spacing to channel (Rule 4.1) - requires derived channel layer
+channel = POLY AND ACTIVE
+NSEL_TO_CHANNEL {
+  @ MOSIS Rule 4.1: Minimum select spacing to channel 3 lambda
+  EXTERNAL channel N_PLUS_SELECT < 3 * LAMBDA
+}
+
+PSEL_TO_CHANNEL {
+  @ MOSIS Rule 4.1: Minimum select spacing to channel 3 lambda
+  EXTERNAL channel P_PLUS_SELECT < 3 * LAMBDA
+}
+
+// -----------------------------------------------------------
+// 5.5 CONTACT RULES (Section 6 - Simple Contact to Active)
+// -----------------------------------------------------------
+
+CONT_SIZE {
+  @ MOSIS Rule 6.1: Exact contact size 2x2 lambda
+  AREA CONTACT == 4 * LAMBDA * LAMBDA
+}
+
+ACT_OVER_CONT {
+  @ MOSIS Rule 6.2: Minimum active overlap 1.5 lambda
+  ENCLOSURE CONTACT ACTIVE < 1.5 * LAMBDA
+}
+
+CONT_SPACING {
+  @ MOSIS Rule 6.3: Minimum contact spacing 3 lambda
+  EXTERNAL CONTACT CONTACT < 3 * LAMBDA
+}
+
+CONT_TO_GATE {
+  @ MOSIS Rule 6.4: Minimum spacing to gate of transistor 2 lambda
+  gate = POLY AND ACTIVE
+  EXTERNAL CONTACT gate < 2 * LAMBDA
+}
+
+// -----------------------------------------------------------
+// 5.6 POLY CONTACT RULES (Section 5)
+// -----------------------------------------------------------
+
+PCONT_SIZE {
+  @ MOSIS Rule 5.1: Exact contact size 2x2 lambda
+  AREA POLY_CONTACT == 4 * LAMBDA * LAMBDA
+}
+
+POLY_OVER_CONT {
+  @ MOSIS Rule 5.2: Minimum poly overlap 1.5 lambda
+  ENCLOSURE POLY_CONTACT POLY < 1.5 * LAMBDA
+}
+
+PCONT_SPACING {
+  @ MOSIS Rule 5.3: Minimum contact spacing 3 lambda
+  EXTERNAL POLY_CONTACT POLY_CONTACT < 3 * LAMBDA
+}
+
+PCONT_TO_GATE {
+  @ MOSIS Rule 5.4: Minimum spacing to gate 2 lambda
+  gate = POLY AND ACTIVE
+  EXTERNAL POLY_CONTACT gate < 2 * LAMBDA
+}
+
+// -----------------------------------------------------------
+// 5.7 METAL1 RULES (Section 7)
+// -----------------------------------------------------------
+
+M1_WIDTH {
+  @ MOSIS Rule 7.1: Minimum width 3 lambda
+  INTERNAL METAL1 < 3 * LAMBDA
+}
+
+M1_SPACING {
+  @ MOSIS Rule 7.2: Minimum spacing 3 lambda
+  EXTERNAL METAL1 METAL1 < 3 * LAMBDA
+}
+
+M1_OVER_CONT {
+  @ MOSIS Rule 7.3: Minimum overlap of any contact 1 lambda
+  ENCLOSURE CONTACT METAL1 < 1 * LAMBDA
+  ENCLOSURE POLY_CONTACT METAL1 < 1 * LAMBDA
+}
+
+M1_WIDE_SPACING {
+  @ MOSIS Rule 7.4: Minimum spacing when either metal >10 lambda (6 lambda spacing)
+  wide_m1 = METAL1 WITH WIDTH > 10 * LAMBDA
+  EXTERNAL wide_m1 METAL1 < 6 * LAMBDA
+  EXTERNAL wide_m1 wide_m1 < 6 * LAMBDA
+}
+
+// -----------------------------------------------------------
+// 5.8 VIA1 RULES (Section 8)
+// -----------------------------------------------------------
+
+VIA_SIZE {
+  @ MOSIS Rule 8.1: Exact size 2x2 lambda
+  AREA VIA == 4 * LAMBDA * LAMBDA
+}
+
+VIA_SPACING {
+  @ MOSIS Rule 8.2: Minimum spacing 3 lambda
+  EXTERNAL VIA VIA < 3 * LAMBDA
+}
+
+M1_OVER_VIA {
+  @ MOSIS Rule 8.3: Minimum overlap by metal1 1 lambda
+  ENCLOSURE VIA METAL1 < 1 * LAMBDA
+}
+
+M2_OVER_VIA {
+  @ MOSIS Rule 8.3 implied: Metal2 overlap of Via
+  ENCLOSURE VIA METAL2 < 1 * LAMBDA
+}
+
+// -----------------------------------------------------------
+// 5.9 METAL2 RULES (Section 9)
+// -----------------------------------------------------------
+
+M2_WIDTH {
+  @ MOSIS Rule 9.1: Minimum width 3 lambda
+  INTERNAL METAL2 < 3 * LAMBDA
+}
+
+M2_SPACING {
+  @ MOSIS Rule 9.2: Minimum spacing 3 lambda
+  EXTERNAL METAL2 METAL2 < 3 * LAMBDA
+}
+
+M2_OVER_VIA_RULE {
+  @ MOSIS Rule 9.3: Minimum overlap of via1 1 lambda
+  ENCLOSURE VIA METAL2 < 1 * LAMBDA
+}
+
+M2_WIDE_SPACING {
+  @ MOSIS Rule 9.4: Minimum spacing when wide (>10 lambda) 6 lambda
+  wide_m2 = METAL2 WITH WIDTH > 10 * LAMBDA
+  EXTERNAL wide_m2 METAL2 < 6 * LAMBDA
+  EXTERNAL wide_m2 wide_m2 < 6 * LAMBDA
+}
+
+// -----------------------------------------------------------
+// 5.10 POLY2 RULES (Sections 11 & 12)
+// -----------------------------------------------------------
+
+// Poly2 for Capacitor (Section 11)
+POLY2_CAP_WIDTH {
+  @ MOSIS Rule 11.1: Minimum width 5 lambda (corrected from 7 in some versions)
+  INTERNAL POLY2 < 5 * LAMBDA
+}
+
+POLY2_CAP_SPACING {
+  @ MOSIS Rule 11.2: Minimum spacing 3 lambda
+  EXTERNAL POLY2 POLY2 < 3 * LAMBDA
+}
+
+POLY2_OVER_POLY {
+  @ MOSIS Rule 11.3: Minimum poly overlap 2 lambda (capacitor bottom plate)
+  ENCLOSURE POLY2 POLY < 2 * LAMBDA
+}
+
+POLY2_TO_ACTIVE_SPACING {
+  @ MOSIS Rule 11.4: Minimum spacing to active or well edge 2 lambda
+  EXTERNAL POLY2 ACTIVE < 2 * LAMBDA
+  EXTERNAL POLY2 N_WELL < 2 * LAMBDA
+}
+
+// Poly2 Contact (Section 13)
+POLY2_CONT_SIZE {
+  @ MOSIS Rule 13.1: Exact contact size 2x2 lambda
+  AREA POLY2_CONTACT == 4 * LAMBDA * LAMBDA
+}
+
+POLY2_CONT_ELEC_OVER {
+  @ MOSIS Rule 13.3: Minimum electrode overlap (on capacitor) 3 lambda
+  ENCLOSURE POLY2_CONTACT POLY2 < 3 * LAMBDA
+}
+
+POLY2_CONT_SPACING {
+  @ MOSIS Rule 13.5: Minimum spacing to poly or active 3 lambda
+  EXTERNAL POLY2_CONTACT POLY < 3 * LAMBDA
+  EXTERNAL POLY2_CONTACT ACTIVE < 3 * LAMBDA
+}
+
+// -----------------------------------------------------------
+// 5.11 VIA2 RULES (Section 14)
+// -----------------------------------------------------------
+
+VIA2_SIZE {
+  @ MOSIS Rule 14.1: Exact size 2x2 lambda
+  AREA VIA2 == 4 * LAMBDA * LAMBDA
+}
+
+VIA2_SPACING {
+  @ MOSIS Rule 14.2: Minimum spacing 3 lambda
+  EXTERNAL VIA2 VIA2 < 3 * LAMBDA
+}
+
+M2_OVER_VIA2 {
+  @ MOSIS Rule 14.3: Minimum overlap by metal2 1 lambda
+  ENCLOSURE VIA2 METAL2 < 1 * LAMBDA
+}
+
+M3_OVER_VIA2 {
+  @ MOSIS Rule 14.3 implied: Metal3 overlap
+  ENCLOSURE VIA2 METAL3 < 1 * LAMBDA
+}
+
+// -----------------------------------------------------------
+// 5.12 METAL3 RULES (Section 15)
+// -----------------------------------------------------------
+
+M3_WIDTH {
+  @ MOSIS Rule 15.1: Minimum width 6 lambda (5 lambda in some versions, check PDK)
+  INTERNAL METAL3 < 6 * LAMBDA
+}
+
+M3_SPACING {
+  @ MOSIS Rule 15.2: Minimum spacing 3 lambda
+  EXTERNAL METAL3 METAL3 < 3 * LAMBDA
+}
+
+M3_OVER_VIA2_RULE {
+  @ MOSIS Rule 15.3: Minimum overlap of via2 1 lambda
+  ENCLOSURE VIA2 METAL3 < 1 * LAMBDA
+}
+
+M3_WIDE_SPACING {
+  @ MOSIS Rule 15.4: Minimum spacing when wide (>10 lambda) 6 lambda
+  wide_m3 = METAL3 WITH WIDTH > 10 * LAMBDA
+  EXTERNAL wide_m3 METAL3 < 6 * LAMBDA
+  EXTERNAL wide_m3 wide_m3 < 6 * LAMBDA
+}
+
+// -----------------------------------------------------------
+// 5.13 ALTERNATIVE CONTACT RULES (Section 6 Alternative)
+// -----------------------------------------------------------
+
+// Alternative active contact with reduced overlap but increased spacing
+ACT_CONT_ALT_OVER {
+  @ MOSIS Rule 6.2.b: Alternative active overlap 1 lambda
+  ENCLOSURE CONTACT ACTIVE < 1 * LAMBDA
+}
+
+ACT_CONT_TO_DIFF_SPACING {
+  @ MOSIS Rule 6.5.b: Minimum spacing to diffusion active 5 lambda
+  EXTERNAL CONTACT ACTIVE < 5 * LAMBDA
+}
+
+ACT_CONT_TO_FIELD_POLY {
+  @ MOSIS Rule 6.6.b & 6.7.b: Spacing to field poly
+  field_poly = POLY NOT (POLY AND ACTIVE)
+  EXTERNAL CONTACT field_poly < 2 * LAMBDA
+//pn  EXTERNAL CONTACT field_poly < 3 * LAMBDA == 2  // For many contacts
+}
+
+// -----------------------------------------------------------
+// SPECIAL CHECKS
+// -----------------------------------------------------------
+
+// Check for acute angles (good practice)
+//pn ACUTE_CHECK {
+//pn   @ Check for acute angles on all layers
+//pn   FLAG ACUTE N_WELL ACTIVE POLY METAL1 METAL2 METAL3
+//pn }
+
+// Density check example (optional)
+METAL1_DENSITY {
+  @ Example density check for Metal1
+  DENSITY METAL1 < 0.3 INSIDE OF EXTENT WINDOW 100 STEP 50
+}
+
+//////////////////////////////////////////////////////////////////////
+// END OF RULE FILE
+//////////////////////////////////////////////////////////////////////

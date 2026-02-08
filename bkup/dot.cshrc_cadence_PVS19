@@ -1,0 +1,470 @@
+#Set the environment variable QT_DEBUG_PLUGINS=1 and then run your application. This should give more detailed information on why it failed.
+#setenv QT_DEBUG_PLUGINS 1 #this will show the debug...
+#
+###############################################################################
+#nmcli radio wifi off
+###############################################################################
+setenv STEPHOME /apps/Cadence/linux/step/STEP01.05.003
+###############################################################################
+setenv MGC_FDI_OA_VERSION 20.18
+#setenv MGC_FDI_OA_VERSION 22.50
+#Calibre PEX failed
+#ERROR: Could not access LibDef plug-in for oaLibDefSystem: #4: Shared Library Not Found: Error loading library 'libsnpsLibDef.so'. libsnpsLibDef.so: cannot open shared object file: No such file or directory.
+###############################################################################
+setenv MC_STAGGER_CHECKERS_32_BIT 1
+###############################################################################
+#setenv SKILLCAD_PATH /apps/scd/current
+setenv SKILLCAD_PATH /apps/SkillCAD/v507/skillcad_v5.0.7
+setenv SKILLCAD_LIC_FILE $SKILLCAD_PATH/lic/skillcad.lic
+###############################################################################
+###############################################################################
+setenv CDS_XVNC_TENBASE 1
+###############################################################################
+setenv CLIOSOFT_DIR /apps/ClioSoft/linux/current
+setenv GDM_USE_SHLIB_ENVVAR 1
+setenv SOS_CDS_EXIT yes
+set path = ( $CLIOSOFT_DIR/bin $path )
+###############################################################################
+set path = ( $STEPHOME/tools/bin $path)
+###############################################################################
+setenv PDK_DIR /Polar/cds_env/FreePDK_SRC
+setenv OSU_FREEPDK /Polar/cds_env/FreePDK_SRC/osu_freepdk_1.0
+###############################################################################
+#For IC23.1
+#.cdsinit file
+#envSetVal("migrate" "_enablePlugins" 'boolean t)
+#or
+#.cdsenv
+#migrate _enablePlugins 'boolean t
+#envSetVal("migrate.layout" "migrationDir" 'string "<Path/MigrationDir>")
+###############################################################################
+setenv ASSURA_USE_PVS_LICENSE
+#Set the avParameter ?noLicenseQueuing t during the Assura run. Assura will check out a PVS LVS license if it is available
+#because it will not queue for the unavailable Assura license anymore.
+#Note that "Assura_DV" prefix (like Assura_DV_design_rule_checker) are NOT Assura licenses.
+#setenv ASSURA_USE_PEGASUS_LICENSE_ENV
+###############################################################################
+#
+#For ICAD12/18/20/IC23.1
+setenv enableDivaInAdvancedNode true
+
+setenv Virtuoso_Photonics_Option 1
+setenv Virtuoso_MultiTech 1
+setenv Virtuoso_Photonics_Platform 1
+setenv Virtuoso_RF_Option 1
+
+setenv CDK_DIR /home/pnguyen/CMOSedu/ncsu-cdk-1.6.0.beta
+
+setenv X_DIR /opt/xfab/pdk
+set path = ( $X_DIR/x_all/cadence/xenv $path)
+alias xkit_populate xkit -t xh035 -m 1022 -n
+
+setenv LIBGL_DRI3_DISABLE 1
+setenv EDITOR nedit
+setenv POLARFAB_PATH /Polar
+setenv GDSSIZE_EXEC    "kmc dbsize"
+
+setenv SYMICA_LICENSE_FILE /apps/symica/share/symica/license/symica.lic
+#setenv PATH  "/apps/symica/bin:$PATH"
+setenv PATH  "/apps/SYMICA/bin:$PATH" #SYMICA is the free version
+
+#setenv VSDEHOME /apps/Cadence/linux/vsde/current
+
+#
+# Global Cadence settings
+#
+setenv CDS_SITE `readlink -f /apps/Cadence/cds_site/current`
+setenv CDSPLOTINIT $CDS_SITE/.cdsplotinit
+setenv CDS_Netlisting_Mode Analog
+setenv CDS_WAVESCAN_MAXHEAP 196M
+#setenv SPECTRE_DEFAULTS "+lqtimeout 0 +lqsleep 30 +lorder Virtuoso_Spectre" #Invalid license feature Virtuoso_Spectre
+#setenv SPECTRE_DEFAULTS "+lqtimeout 0 +lqsleep 30 +lorder Virtuoso_Spectre:Virtuoso_Multi_mode_Simulation"
+#setenv SPECTRE_DEFAULTS "+lqtimeout 0 +lqsleep 30 +lorder Virtuoso_Multi_mode_Simulation" #Invalid license feature 
+setenv ADETIMEOUT 10
+setenv DD_USE_LIBDEFS no
+
+setenv GF_PDK_HOME /GF_PDK/130SWSOI-8SW/V1.3_4.0 #This is for Akoustis Project
+#For RFMicron
+setenv GPDK_INSTALL_DIR /design/process/SMIC/smic55ll_ulp_rf/v1.16_1/smic55ll_ulp_rf_09121825_1P7M_5Ic_1TMc_1MTTc_ALPA1_oa_cds_v1.16_1
+
+##########################################################################
+#setenv STEPHOME /apps/Cadence/linux/step/STEP10
+setenv STEPHOME /apps/Cadence/linux/step/STEP01.05.003
+set path = ( $STEPHOME/tools/bin $path)
+#To open PCell Testbench, do one of the following:
+#cd /home/pnguyen/test/step
+#step -p prj_file_name -t pcell
+#step -p sg8_pcell -t pcell
+##########################################################################
+##########################################################################
+# Artwork qckvu gds viewer path
+#
+#
+setenv ARTWORK_LICENSE_FILE /apps/Artwork/license/license.dat
+
+#if ( $?LM_LICENSE_FILE ) then
+#   setenv LM_LICENSE_FILE /apps/Artwork/flexlm.linux.license/license.dat:$LM_LICENSE_FILE
+#else
+#   setenv LM_LICENSE_FILE /apps/Artwork/flexlm.linux.license/license.dat
+#endif
+
+setenv QCKVU_HOME /apps/Artwork/qckvu.linux
+set path = ( $QCKVU_HOME/bin $path )
+setenv QCKVU3_HOME /apps/Artwork/qckvu3
+set path = ( $QCKVU3_HOME/bin $path )
+setenv GOSCAN_HOME /apps/Artwork/goscan
+set path = ( $GOSCAN_HOME $path )
+
+setenv KLAYOUT_PATH /apps/klayout
+set path = ( $KLAYOUT_PATH/bin $path )
+
+setenv PATH  "/apps/FlexLM_11.15/bin:$PATH"
+
+#set path = ( /apps/Artwork/qckvu.linux/bin $path )
+##########################################################################
+
+##########################################################################
+setenv W3264_NO_HOST_CHECK 1
+setenv W3264_NOWARN_UNSUPPORTED_CENTOS 1
+setenv W3264_NOWARN_UNSUPPORTED_UBUNTU 1
+setenv CDS_AUTO_64BIT ALL
+setenv ASSURA_AUTO_64BIT ALL
+##########################################################################
+setenv QRCTODFII_TYPE qrc
+setenv CDS_ENABLE_EXP_PCELL true
+##########################################################################
+setenv MMSIM_ADE_EMIR true
+setenv EMIR_VAVO_DB 5.0
+##########################################################################
+## To Generate VSA_RESULTS Database for VfiPlot ##
+setenv VFI_VSAPLOT_DB 1
+setenv VFI_VSAPLOT_DUMP_DSPF 1
+
+## Setup for APS-VPSML flow ########
+setenv WORKDIR $PWD
+
+##########################################################################
+setenv GLADE_HOME /apps/Glade/current/glade6_linux64_rh9
+#setenv GLADE_HOME /apps/Glade/6.0.9/glade6_linux64_rh9
+#setenv GLADE_HOME /apps/glade/4.7.105/glade4_linux64_rh8
+#setenv GLADE_HOME /apps/glade/4.7.70/glade4_linux64_ub16
+##########################################################################
+
+setenv PASHOME  `readlink -f /apps/Cadence/linux/pas/PAS31/`
+
+#setenv ICHOME  `readlink -f /apps/Cadence/linux/ic/ICADVM20.10.000/`
+#setenv OA_HOME $ICHOME/oa_v22.60.043
+#setenv OA_UNSUPPORTED_PLAT linux_rhel60
+
+#setenv ICHOME  `readlink -f /apps/Cadence/linux/ic/IC06.18.130/`
+#setenv OA_HOME /apps/Cadence/linux/ic/IC06.18.130/oa_v22.60.041
+#setenv OA_UNSUPPORTED_PLAT linux_rhel60
+
+setenv ICHOME  `readlink -f /apps/Cadence/linux/ic/IC618/`
+setenv OA_HOME /apps/Cadence/linux/ic/IC618/oa_v22.60.007
+setenv OA_UNSUPPORTED_PLAT linux_rhel60
+
+setenv CDSHOME $ICHOME
+setenv CDS_HOME $ICHOME
+##########################################################################
+#setenv PVSHOME `readlink -f /apps/Cadence/linux/pvs/PVS20.11.000/` #works, but checkout Pegasus_DRC fails
+ #setenv PVSHOME `readlink -f /apps/Cadence/linux/pvs/PVS20.10.100/`
+##########################################################################
+setenv PVSHOME `readlink -f /apps/Cadence/linux/pvs/PVS19.15.000/`
+#setenv PVSHOME `readlink -f /apps/Cadence/linux/pvs/PVS20.10.100/` #works
+#setenv PVSHOME `readlink -f /apps/Cadence/linux/pvs/PVS20.11.000/` #works
+#setenv PVSHOME `readlink -f /apps/Cadence/linux/pvs/PVS21.10.000/` # Invalid license key
+#setenv PVSHOME `readlink -f /apps/Cadence/linux/pvs/PVS21.12.000/` # Invalid license key
+#setenv PVSHOME `readlink -f /apps/Cadence/linux/pvs/PVS22.10.000/` #license fails
+#setenv PVSHOME `readlink -f /apps/Cadence/linux/pegasus/PEGASUS20.20.000/` #works
+#setenv PVSHOME `readlink -f /apps/Cadence/linux/pegasus/PEGASUS21.10.000/` #works
+
+#setenv SPECTRE /apps/Cadence/linux/spectre/SPECTRE20.10.068
+setenv MMSIMHOME /apps/Cadence/linux/spectre/SPECTRE20.10.068 #this works
+#setenv MMSIMHOME /apps/Cadence/linux/spectre/SPECTRE19.10.292
+setenv MMSIM $MMSIMHOME
+setenv SPICEVISION_HOME $MMSIMHOME #ERROR spicevisionpro: can not start
+#Running "spicevisionpro" from MMSIMHOME installation to load custom userware script automatically.
+#setenv OA_HOME $MSIMHOME/oa_v22.60.038
+#setenv OA_UNSUPPORTED_PLAT linux_rhel60
+
+#setenv MMSIMHOME /apps/Cadence/linux/spectre/SPECTRE21.10.334 #license fails
+#setenv MMSIMHOME /apps/Cadence/linux/spectre/SPECTRE21.10.582 #license fails
+#setenv MMSIMHOME /apps/Cadence/linux/spectre/SPECTRE21.10.058 #Invalid license feature
+#setenv SPECTRE_FEATURE_FILE $SPECTRE/tools/spectre/etc/files/spectre.dat
+setenv SPECTRE_FEATURE_FILE $MMSIMHOME/tools/spectre/etc/files/spectre.dat
+#setenv INCISIV /apps/Cadence/linux/incisiv/INCISIVE15.20.001
+#setenv INCISIV /apps/Cadence/linux/incisiv/INCISIVE15.20.086
+#setenv INCISIV /apps/Cadence/linux/incisiv/incisiv9.20.024/IUS92 #fails to netlist
+#setenv INCISIV /apps/Cadence/linux/incisiv/INCISIVE15.20.086
+#setenv AMSHOME /apps/Cadence/linux/xcelium/XCELIUMMAIN22.09.013 #xrun
+#setenv AMSHOME /apps/Cadence/linux/xcelium/XCELIUMML20.09.026 #xrun
+
+setenv INCISIV /apps/Cadence/linux/ius/ius5.7
+setenv IUSHOME $INCISIV
+
+#setenv CONFORMAL /apps/Cadence/linux/confrml/CONFRML21.10.300
+
+setenv RC /apps/Cadence/linux/rc/RC142
+
+#setenv GENUS /apps/Cadence/linux/genus/GENUS20.12.001 #genus 1> gui_show #xmelab: *W,CUVWSP (./tb.v,13|13): 1 output port was not connected:
+#GENUS VERSION
+#TMPDIR is being set to /tmp/genus_temp_31869_PolarLinuxEcosystem_pnguyen_m9D43Z
+#Segmentation Fault accessing address 18.
+#Fatal internal error, code 11 (Segmentation fault)
+#Dumping stack trace (tid:7f864a89cec0/main thread).
+#Operating System: linux
+#Product Version: 20.12-s150_1
+#Build Date: Oct 14 2021 10:38:13
+#Executable: /apps/Cadence/linux/genus/GENUS20.12.001/tools.lnx86/synth/bin/64bit/genus
+#Startup Options: -version
+#Current Directory: /home/pnguyen
+#Stack trace:
+#Abnormal exit.
+#/icd/rc/genus20/genus_201/20.12-s150_1/build/lnx86_64_opt/src/utl_low/tcm24/core/tcmalloc.cpp:298] Attempt to free invalid pointer 0x73
+#Abort (core dumped)
+#
+#
+setenv GENUS /apps/Cadence/linux/genus/GENUS19.17.000 #genus 1> gui_show #xmelab: *W,CUVWSP (./tb.v,13|13): 1 output port was not connected:
+#
+#setenv GENUS /apps/Cadence/linux/genus/GENUS19.10.000 #genus 1> gui_show
+
+setenv INNOVUS /apps/Cadence/linux/innovus/INNOVUS19.18.000 #innovus > win (to display window)
+
+###############################################################################
+#setenv QRC_HOME /apps/Cadence/linux/quantus/QUANTUS21.22.000 #license fails
+###############################################################################
+#ERROR (LBRCXM-584): ERROR (LMF-02008): License call failed for feature 
+#Virtuoso_QRC_Extraction_XL, version 21.200 and quantity 1. 
+#The license server search path is defined as /apps/Cadence/license/license.dat.# The FLEXnet error message is as follows,
+#    FLEXnet ERROR(-8, 0, 0): Invalid (inconsistent) license key.
+#
+###############################################################################
+#setenv QRC_HOME /apps/Cadence/linux/ext/EXT161 #does not have qrc quantus
+
+setenv QRC_HOME /apps/Cadence/linux/ext/EXT19.13.000 #does not have Run Voltus-Fi - Quantus
+#setenv QRC_HOME /apps/Cadence/linux/quantus/QUANTUS21.22.000 #does not have Run Quantus for VoltusFi (inconsistent license keys)
+
+setenv SSV_HOME /apps/Cadence/linux/ssv/SSV20.17.000 #has spicevisionpro
+#setenv OA_HOME $SSV_HOME/oa_v22.60.057
+#setenv OA_UNSUPPORTED_PLAT linux_rhel60
+
+#setenv SSV_HOME /apps/Cadence/linux/ssv/SSV19.16.000
+#setenv OA_HOME $SSV_HOME/oa_v22.60.s011
+#setenv OA_UNSUPPORTED_PLAT linux #_64 #linux_rhel60
+
+#setenv SPECTRE /apps/Cadence/linux/spectre/SPECTRE19.10.292
+#setenv AMSHOME /apps/Cadence/linux/spectre/SPECTRE19.10.348
+#setenv SPECTRE /apps/Cadence/linux/sim/MMSIM151 #has spicevisionpro
+#setenv SPECTRE /apps/Cadence/linux/sim/cadence-mmsim-15.10.345_lsf
+#setenv SPECTRE /apps/Cadence/linux/sim/cadence-mmsim-15.10.257
+
+#setenv ALTOSHOME /apps/Cadence/linux/liberate/LIBERATE20.10.674 #license fails
+
+setenv ALTOSHOME /apps/Cadence/linux/liberate/LIBERATE181
+setenv ALTOS_QUEUE 1
+
+
+setenv ASSURAHOME `readlink -f /apps/Cadence/linux/assura/ASSURA416001-618/`
+#An error occured. We don't recognize OS
+#
+#setenv OA_HOME /apps/Cadence/linux/ic/IC618/oa_v22.60.007
+#setenv OA_UNSUPPORTED_PLAT linux_rhel60
+
+#setenv ASSURAHOME `readlink -f /apps/Cadence/linux/assura/ASSURA04.16.109-181/`
+#An error occured. We don't recognize OS
+#WARNING This OS does not appear to be a Cadence supported Linux configuration.
+#Failed to check out license 'Virtuoso_Photonics_Platform'
+#
+
+setenv LM_LICENSE_FILE /apps/Cadence/license/license.dat
+
+#setenv OA_HOME /apps/Cadence/linux/ic/IC06.18.130/oa_v22.60.041
+###############################################################################
+#setenv MGC_HOME /apps/Siemens/Calibre/2021.4_33.16/aoi_cal_2021.4_33.16
+#setenv USE_CALIBRE_VCO aoi
+###############################################################################
+#--- CALIBRE::HIERARCHICAL CIRCUIT EXTRACTOR - Tue Nov  5 11:47:42 2024
+
+#//  Applying licensing policy...
+
+#//  ERROR: The following products could not be licensed sufficiently:
+#//  ERROR: - LVS (Hierarchical)
+#//  ERROR: - LVS Extraction
+###############################################################################
+#setenv CALIBRE_SKIP_OS_CHECKS 1
+#setenv CALIBRE_DISABLE_RHEL6_WARNING 1
+#setenv MGC_HOME /apps/Siemens/Calibre/2023.4_17.10/aoi_cal_2023.4_17.10
+#setenv USE_CALIBRE_VCO aoi
+###############################################################################
+#This version works
+setenv MGC_HOME /apps/mgc/calibre/Calibre2018/aoi_cal_2018.2_33.24
+setenv CALIBRE_HOME /apps/mgc/calibre/Calibre2018/aoi_cal_2018.2_33.24
+setenv USE_CALIBRE_VCO aoi
+###############################################################################
+setenv MGC_TMPDIR /tmp
+#setenv MGLS_LICENSE_FILE /apps/mgc/license/license.dat
+setenv MGLS_LICENSE_FILE /apps/mgc/calibre/license/license.dat
+###############################################################################
+
+setenv PATH  "$MGC_HOME/bin:$PATH"
+setenv PATH  "$GLADE_HOME/bin:$PATH"
+setenv PATH  "$GLADE_HOME/bin:$PATH"
+setenv PATH  "$PASHOME/tools/bin:$PASHOME/tools/ant/bin:$PATH"
+setenv PATH  "$ASSURAHOME/tools/assura/bin:$ASSURAHOME/bin:$PATH"
+setenv PATH  "$IUSHOME/tools/bin:$PATH"
+#setenv PATH  "$AMSHOME/tools/bin:$PATH"
+#setenv PATH  "$SPECTRE/tools/bin:$PATH"
+setenv PATH  "$MMSIMHOME/tools/bin:$PATH"
+setenv PATH  "$INCISIV/tools/bin:$PATH"
+#setenv PATH  "$VSDEHOME/tools/acv/bin:$PATH"
+setenv PATH  "$ALTOSHOME/tools/liberate/bin:$PATH"
+#setenv PATH  "$ALTOSHOME/tools/spectre/bin:$PATH" #DO NOT USE, Cannot compiler ahdlcmi module library.
+#setenv PATH  "$CONFORMAL/tools/bin:$PATH"
+setenv PATH  "$RC/tools/bin:$PATH"
+setenv PATH  "$GENUS/tools/bin:$PATH"
+setenv PATH  "$INNOVUS/tools/bin:$PATH"
+setenv PATH  "$QRC_HOME/bin:$PATH"
+setenv PATH  "$SSV_HOME/tools/bin:$PATH"
+setenv PATH  "$ICHOME/tools/bin:$ICHOME/tools/dfII/bin:$ICHOME/tools/ssvtools/bin:$PATH"
+setenv PATH  "/apps/Silvaco/license/bin:$PATH"
+setenv PATH  "/apps/OpenLink_glibc2.5/bin:$PATH"
+
+#####################################################################################
+#setenv K2_HOME /apps/Cadence/linux/pegasus/PEGASUS23.13.000
+#setenv K2_HOME /apps/Cadence/linux/pegasus/PEGASUS22.10.000 #kmc license fails
+setenv K2_HOME /apps/Cadence/linux/pegasus/PEGASUS21.31.000 #kmc this works
+#setenv K2_HOME /apps/Cadence/linux/pegasus/PEGASUS20.20.000 #DRC/LVS/K2 MaskCompose works
+setenv K2_MASKCOMPOSE_HOME $K2_HOME/tools/K2/MaskCompose
+setenv K2_MCI_EXEC     "kmc mci"
+setenv K2_MCARCH_EXEC  "kmc mcarch"
+setenv K2_MCEXT_EXEC   "kmc mcext"
+setenv GDSSIZE_EXEC    "kmc dbsize"
+setenv K2_MCCORE_EXEC  "kmc mccore"
+setenv IS_GDS_EXEC     "k2_batch is_gds"
+#####################################################################################
+setenv K2_VIEWER_HOME /apps/Cadence/linux/pvs/PVS19.15.000/tools/K2/Viewer
+setenv K2_MACROS /apps/Cadence/linux/pvs/PVS19.15.000/share/K2/Viewer/macros
+#####################################################################################
+#this works
+#setenv K2_VIEWER_HOME /apps/Cadence/linux/pvs/PVS20.10.100/tools/K2/Viewer
+#setenv K2_MACROS /apps/Cadence/linux/pvs/PVS20.10.100/share/K2/Viewer/macros
+#####################################################################################
+#this fails
+#setenv K2_VIEWER_HOME /apps/Cadence/linux/pvs/PVS20.11.000/tools/K2/Viewer
+#setenv K2_MACROS /apps/Cadence/linux/pvs/PVS20.11.000/share/K2/Viewer/macros
+#/apps/Cadence/linux/pvs/PVS20.11.000/tools.lnx86/K2/Viewer/bin/amd64/qt_executive: 
+#symbol lookup error: /lib64/libXext.so.6: undefined symbol: _XEatDataWords
+#####################################################################################
+#this works
+#setenv K2_VIEWER_HOME /apps/Cadence/linux/pegasus/PEGASUS20.20.000/tools/K2/Viewer
+#setenv K2_MACROS /apps/Cadence/linux/pegasus/PEGASUS20.20.000/share/K2/Viewer/macros
+#####################################################################################
+#k2_viewer works, but MDPVS -> Density Map fails...
+#setenv K2_VIEWER_HOME /apps/Cadence/linux/pegasus/PEGASUS21.31.000/tools/K2/Viewer
+#setenv K2_MACROS /apps/Cadence/linux/pegasus/PEGASUS21.31.000/share/K2/Viewer/macros
+#####################################################################################
+#####################################################################################
+#this fails
+#setenv QT_DEBUG_PLUGINS 1 #this will show the debug...
+#setenv K2_VIEWER_HOME /apps/Cadence/linux/pegasus/PEGASUS21.10.000/tools/K2/Viewer
+#setenv K2_MACROS /apps/Cadence/linux/pegasus/PEGASUS21.10.000/share/K2/Viewer/macros
+#####################################################################################
+setenv PATH  "$PVSHOME/tools/bin:$PVSHOME/tools/pvs/bin:$PATH"
+setenv PATH  "$K2_MASKCOMPOSE_HOME/bin:$PATH"
+setenv PATH  "$K2_VIEWER_HOME/bin:$PATH"
+setenv PATH  "/Polar/code:$PATH"
+
+##################################################################
+## DO NOT update any env. Variable below:
+##################################################################
+#    Set Artist Netlisting Mode to Analog    #
+setenv  CDS_Netlisting_Mode     Analog
+
+## VoltusFi-L New Viewer ##
+setenv QRCTODFII_TYPE qrc
+setenv CDS_ENABLE_EXP_PCELL true
+setenv _vsaUseContinuousPlots t
+setenv _vsaEnableCombineAnalysis 1
+setenv _vsaICTConductorUnit "mA"
+setenv _vsaEnablePowerGridRules 1
+setenv _vsaDumpResultDB 1
+setenv _vsaDrfFile   $CDSHOME/tools/vsa/etc/vavo.drf
+setenv _vsaTechFile  $CDSHOME/tools/vsa/etc/vavo_techfile
+setenv _vsaCopyOAView 1
+
+setenv MMSIM_ADE_EMIR true
+setenv EMIR_VAVO_DB 5.0
+
+#setenv LD_LIBRARY_PATH "$AMSHOME/tools/lib"
+setenv LD_LIBRARY_PATH "${CLIOSOFT_DIR}/lib:${CLIOSOFT_DIR}/lib/64bit"
+
+#
+# Shared Libraries Path
+#
+      if ( $?LD_LIBRARY_PATH ) then
+#pn           setenv LD_LIBRARY_PATH "$MMSIMHOME/tools/lib:$ICHOME/tools/lib:$LD_LIBRARY_PATH"
+           setenv LD_LIBRARY_PATH "$ICHOME/tools/lib:$LD_LIBRARY_PATH"
+         else
+#pn           setenv LD_LIBRARY_PATH "$MMSIMHOME/tools/lib:$ICHOME/tools/lib"
+           setenv LD_LIBRARY_PATH "$ICHOME/tools/lib"
+      endif
+
+
+## To Generate VSA_RESULTS Database for VfiPlot ##
+setenv VFI_VSAPLOT_DB 1
+setenv VFI_VSAPLOT_DUMP_DSPF 1
+
+## Setup for APS-VPSML flow ########
+setenv WORKDIR $PWD
+
+#echo ==============================================
+#echo RC VERSION
+#rc -version
+
+
+#echo ==============================================
+#echo INCISIV VERSION simvision
+#simvision -v
+
+#echo ==============================================
+#echo GENUS VERSION
+#genus -version
+
+#echo ==============================================
+#echo INNOVUS VERSION 
+#innovus -version
+
+#echo ==============================================
+#echo VIRTUOSO VERSION
+#virtuoso -W
+
+#echo ==============================================
+#echo SPECTRE VERSION
+#spectre -W
+
+echo ==============================================
+echo PVS VERSION
+pvs -v | grep Version
+
+#echo ==============================================
+#echo PEGASUS K2 MaskCompose VERSION
+#kmc -v 
+
+#echo ==============================================
+#echo QUANTUS EXT/QRC VERSION
+#quantus -v | grep Version
+
+#echo ==============================================
+#echo VOLTUS-FI VERSION vpsbatch -v
+#vpsbatch -v
+
+#echo ==============================================
+#echo VOLTUS VERSION SSV_HOME voltus
+#voltus -version
+
+#echo ==============================================
+#echo XCELIUM VERSION
+#xrun -version
+echo ==============================================
+lmhostid

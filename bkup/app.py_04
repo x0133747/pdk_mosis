@@ -1,0 +1,1001 @@
+import streamlit as st
+import gdspy
+import tempfile
+import os
+import subprocess
+import platform
+import shutil
+from datetime import datetime
+import pandas as pd
+import base64
+from io import StringIO, BytesIO
+
+# Configure Streamlit page
+st.set_page_config(
+    page_title="MOSIS PDK Automation System",
+    page_icon="🔧",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
+# Custom CSS for professional appearance
+st.markdown(
+    """
+<style>
+    .main-header {
+        font-size: 2.5rem;
+        font-weight: bold;
+        color: #1f77b4;
+        text-align: center;
+        margin-bottom: 2rem;
+    }
+    .viewer-btn {
+        background-color: #4CAF50;
+        color: white;
+        padding: 10px 24px;
+        margin: 5px;
+        border: none;
+        border-radius: 4px;
+        cursor: pointer;
+        font-weight: bold;
+    }
+    .calibre-btn {
+        background-color: #2196F3;
+        color: white;
+        padding: 10px 24px;
+        margin: 5px;
+        border: none;
+        border-radius: 4px;
+        cursor: pointer;
+        font-weight: bold;
+    }
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 24px;
+    }
+    .stTabs [data-baseweb="tab"] {
+        height: 50px;
+        padding-top: 10px;
+        padding-bottom: 10px;
+        background-color: #f0f2f6;
+        border-radius: 4px;
+    }
+    .drc-rule {
+        background-color: #f9f9f9;
+        padding: 10px;
+        border-left: 3px solid #1f77b4;
+        margin: 5px 0;
+        font-family: monospace;
+        font-size: 0.9rem;
+    }
+    .error-cell {
+        background-color: #fff3cd;
+        border-left: 3px solid #ffc107;
+        padding: 10px;
+        margin: 5px 0;
+    }
+    .info-box {
+        background-color: #e3f2fd;
+        padding: 15px;
+        border-radius: 5px;
+        border-left: 4px solid #2196F3;
+        margin: 10px 0;
+    }
+</style>
+""",
+    unsafe_allow_html=True,
+)
+
+# Initialize session state
+if "generated_gds" not in st.session_state:
+    st.session_state.generated_gds = None
+if "calibre_deck" not in st.session_state:
+    st.session_state.calibre_deck = None
+if "gds_filepath" not in st.session_state:
+    st.session_state.gds_filepath = None
+
+# MOSIS SCMOS Layer Mapping (from PDF)
+LAYER_MAP = {
+    "N_WELL": (42, "CWN"),
+    "ACTIVE": (43, "CAA"),
+    "POLY": (46, "CPG"),
+    "N_PLUS_SELECT": (45, "CSN"),
+    "P_PLUS_SELECT": (44, "CSP"),
+    "POLY2": (56, "CP2"),
+    "HI_RES_IMPLANT": (34, "CHR"),
+    "CONTACT": (25, "CCC"),
+    "POLY_CONTACT": (47, "CCP"),
+    "ACTIVE_CONTACT": (48, "CCA"),
+    "POLY2_CONTACT": (55, "CCE"),
+    "METAL1": (49, "CM1"),
+    "VIA": (50, "CV1"),
+    "METAL2": (51, "CM2"),
+    "VIA2": (61, "CV2"),
+    "METAL3": (62, "CM3"),
+    "GLASS": (52, "COG"),
+    "PADS": (26, "XP"),
+}
+
+# Design Rules Database (extracted from PDF)
+DESIGN_RULES = {
+    "N_WELL": {
+        "1.1": {"desc": "Minimum width", "value": 12, "type": "width"},
+        "1.2": {
+            "desc": "Minimum spacing between wells at different potential",
+            "value": 18,
+            "type": "spacing",
+        },
+        "1.3": {
+            "desc": "Minimum spacing between wells at same potential",
+            "value": 6,
+            "type": "spacing",
+        },
+        "1.4": {
+            "desc": "Minimum spacing between wells of different type",
+            "value": 0,
+            "type": "spacing",
+        },
+    },
+    "ACTIVE": {
+        "2.1": {"desc": "Minimum width", "value": 3, "type": "width"},
+        "2.2": {"desc": "Minimum spacing", "value": 3, "type": "spacing"},
+        "2.3": {
+            "desc": "Source/drain active to well edge",
+            "value": 6,
+            "type": "spacing",
+        },
+        "2.4": {
+            "desc": "Substrate/well contact active to well edge",
+            "value": 3,
+            "type": "spacing",
+        },
+        "2.5": {
+            "desc": "Minimum spacing between active of different implant",
+            "value": 4,
+            "type": "spacing",
+        },
+    },
+    "POLY": {
+        "3.1": {"desc": "Minimum width", "value": 2, "type": "width"},
+        "3.2": {"desc": "Minimum spacing over field", "value": 3, "type": "spacing"},
+        "3.2a": {"desc": "Minimum spacing over active", "value": 3, "type": "spacing"},
+        "3.3": {
+            "desc": "Minimum gate extension of active",
+            "value": 2,
+            "type": "extension",
+        },
+        "3.4": {
+            "desc": "Minimum active extension of poly",
+            "value": 3,
+            "type": "extension",
+        },
+        "3.5": {"desc": "Minimum field poly to active", "value": 1, "type": "spacing"},
+    },
+    "SELECT": {
+        "4.1": {
+            "desc": "Minimum select spacing to channel",
+            "value": 3,
+            "type": "spacing",
+        },
+        "4.2": {
+            "desc": "Minimum select overlap of active",
+            "value": 2,
+            "type": "overlap",
+        },
+        "4.3": {
+            "desc": "Minimum select overlap of contact",
+            "value": 1,
+            "type": "overlap",
+        },
+        "4.4": {
+            "desc": "Minimum select width and spacing",
+            "value": 2,
+            "type": "width",
+        },
+    },
+    "CONTACT": {
+        "6.1": {"desc": "Exact contact size", "value": 2, "type": "size"},
+        "6.2": {"desc": "Minimum active overlap", "value": 1.5, "type": "overlap"},
+        "6.3": {"desc": "Minimum contact spacing", "value": 3, "type": "spacing"},
+        "6.4": {
+            "desc": "Minimum spacing to gate of transistor",
+            "value": 2,
+            "type": "spacing",
+        },
+    },
+    "POLY_CONTACT": {
+        "5.1": {"desc": "Exact contact size", "value": 2, "type": "size"},
+        "5.2": {"desc": "Minimum poly overlap", "value": 1.5, "type": "overlap"},
+        "5.3": {"desc": "Minimum contact spacing", "value": 3, "type": "spacing"},
+        "5.4": {
+            "desc": "Minimum spacing to gate of transistor",
+            "value": 2,
+            "type": "spacing",
+        },
+    },
+    "METAL1": {
+        "7.1": {"desc": "Minimum width", "value": 3, "type": "width"},
+        "7.2": {"desc": "Minimum spacing", "value": 3, "type": "spacing"},
+        "7.3": {
+            "desc": "Minimum overlap of any contact",
+            "value": 1,
+            "type": "overlap",
+        },
+        "7.4": {
+            "desc": "Minimum spacing when wide (>10λ)",
+            "value": 6,
+            "type": "spacing",
+        },
+    },
+    "VIA": {
+        "8.1": {"desc": "Exact size", "value": 2, "type": "size"},
+        "8.2": {"desc": "Minimum spacing", "value": 3, "type": "spacing"},
+        "8.3": {"desc": "Minimum overlap by metal1", "value": 1, "type": "overlap"},
+    },
+    "METAL2": {
+        "9.1": {"desc": "Minimum width", "value": 3, "type": "width"},
+        "9.2": {"desc": "Minimum spacing", "value": 3, "type": "spacing"},
+        "9.3": {"desc": "Minimum overlap of via1", "value": 1, "type": "overlap"},
+        "9.4": {
+            "desc": "Minimum spacing when wide (>10λ)",
+            "value": 6,
+            "type": "spacing",
+        },
+    },
+    "POLY2_CAP": {
+        "11.1": {"desc": "Minimum width", "value": 5, "type": "width"},
+        "11.2": {"desc": "Minimum spacing", "value": 3, "type": "spacing"},
+        "11.3": {"desc": "Minimum poly overlap", "value": 2, "type": "overlap"},
+    },
+    "METAL3": {
+        "15.1": {"desc": "Minimum width", "value": 6, "type": "width"},
+        "15.2": {"desc": "Minimum spacing", "value": 3, "type": "spacing"},
+        "15.3": {"desc": "Minimum overlap of via2", "value": 1, "type": "overlap"},
+    },
+}
+
+
+def launch_gds_viewer(viewer_type, gds_data):
+    """
+    Launch external GDS viewer with the generated file
+    viewer_type: 'klayout', 'calibredrv', or 'k2_viewer'
+    """
+    try:
+        # Check if executable exists in PATH
+        executable_map = {
+            "klayout": "klayout",
+            "calibredrv": "calibredrv",
+            "k2_viewer": "k2_viewer",
+        }
+
+        if viewer_type in executable_map:
+            executable = executable_map[viewer_type]
+            if shutil.which(executable) is None:
+                return (
+                    False,
+                    f"Error: {executable} not found in PATH. Please ensure {viewer_type} is installed and accessible.",
+                )
+        else:
+            return False, f"Unknown viewer type: {viewer_type}"
+
+        # Create temp file with proper extension
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        temp_dir = tempfile.gettempdir()
+        gds_path = os.path.join(temp_dir, f"QA_Error_Cells_{timestamp}.gds")
+
+        # Write GDS data to temp file
+        with open(gds_path, "wb") as f:
+            f.write(gds_data)
+
+        # Store path in session for future reference
+        st.session_state.gds_filepath = gds_path
+
+        # Determine command based on OS and viewer type
+        system = platform.system()
+
+        if viewer_type == "klayout":
+            if system == "Windows":
+                cmd = f'klayout "{gds_path}"'
+            else:  # Linux/Mac
+                cmd = f'klayout "{gds_path}" &'
+        elif viewer_type == "calibredrv":
+            if system == "Windows":
+                cmd = f'calibredrv "{gds_path}"'
+            else:
+                cmd = f'calibredrv "{gds_path}" &'
+        elif viewer_type == "k2_viewer":
+            if system == "Windows":
+                cmd = f'k2_viewer "{gds_path}"'
+            else:
+                cmd = f'k2_viewer "{gds_path}" &'
+        else:
+            return False, f"Unknown viewer type: {viewer_type}"
+
+        # Execute command
+        if system == "Windows":
+            subprocess.Popen(cmd, shell=True)
+        else:
+            subprocess.Popen(
+                cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+            )
+
+        return True, f"Launched {viewer_type} with {gds_path}"
+
+    except Exception as e:
+        return False, f"Error launching {viewer_type}: {str(e)}"
+
+
+# ============== APP 1: QA ERROR CELL GENERATOR ==============
+
+
+def create_error_cell(lib, rule_category, rule_id, rule_info, lambda_val=1.0):
+    """
+    Generate a GDS cell with intentional DRC violation
+    Returns: gdspy.Cell object
+    """
+    cell_name = f"ERR_{rule_category}_{rule_id.replace('.', '_')}"
+
+    # Check if cell already exists
+    if cell_name in lib.cells:
+        return lib.cells[cell_name]
+
+    cell = lib.new_cell(cell_name)
+
+    violation_value = (
+        rule_info["value"] - 0.5
+    )  # Intentional violation (0.5 lambda less)
+    if violation_value < 0.5:
+        violation_value = rule_info["value"] - 0.1
+
+    try:
+        if rule_category == "N_WELL":
+            layer = LAYER_MAP["N_WELL"][0]
+            if rule_info["type"] == "width":
+                cell.add(
+                    gdspy.Rectangle(
+                        (0, 0),
+                        (violation_value * lambda_val, 20 * lambda_val),
+                        layer=layer,
+                    )
+                )
+                cell.add(
+                    gdspy.Text(
+                        f"ERR: {rule_id}",
+                        2 * lambda_val,
+                        (0, 22 * lambda_val),
+                        layer=layer,
+                    )
+                )
+            elif rule_info["type"] == "spacing":
+                cell.add(
+                    gdspy.Rectangle(
+                        (0, 0), (10 * lambda_val, 10 * lambda_val), layer=layer
+                    )
+                )
+                cell.add(
+                    gdspy.Rectangle(
+                        (10 * lambda_val + violation_value * lambda_val, 0),
+                        (
+                            20 * lambda_val + violation_value * lambda_val,
+                            10 * lambda_val,
+                        ),
+                        layer=layer,
+                    )
+                )
+
+        elif rule_category == "ACTIVE":
+            layer = LAYER_MAP["ACTIVE"][0]
+            if rule_info["type"] == "width":
+                cell.add(
+                    gdspy.Rectangle(
+                        (0, 0),
+                        (violation_value * lambda_val, 10 * lambda_val),
+                        layer=layer,
+                    )
+                )
+            elif rule_info["type"] == "spacing":
+                cell.add(
+                    gdspy.Rectangle(
+                        (0, 0), (5 * lambda_val, 5 * lambda_val), layer=layer
+                    )
+                )
+                cell.add(
+                    gdspy.Rectangle(
+                        (5 * lambda_val + violation_value * lambda_val, 0),
+                        (
+                            10 * lambda_val + violation_value * lambda_val,
+                            5 * lambda_val,
+                        ),
+                        layer=layer,
+                    )
+                )
+
+        elif rule_category == "POLY":
+            layer = LAYER_MAP["POLY"][0]
+            if rule_info["type"] == "width":
+                cell.add(
+                    gdspy.Rectangle(
+                        (0, 0),
+                        (20 * lambda_val, violation_value * lambda_val),
+                        layer=layer,
+                    )
+                )
+            elif rule_info["type"] == "spacing":
+                cell.add(
+                    gdspy.Rectangle(
+                        (0, 0), (10 * lambda_val, 2 * lambda_val), layer=layer
+                    )
+                )
+                cell.add(
+                    gdspy.Rectangle(
+                        (0, 2 * lambda_val + violation_value * lambda_val),
+                        (
+                            10 * lambda_val,
+                            4 * lambda_val + violation_value * lambda_val,
+                        ),
+                        layer=layer,
+                    )
+                )
+            elif rule_info["type"] == "extension":
+                active_layer = LAYER_MAP["ACTIVE"][0]
+                cell.add(
+                    gdspy.Rectangle(
+                        (0, 0), (10 * lambda_val, 5 * lambda_val), layer=active_layer
+                    )
+                )
+                cell.add(
+                    gdspy.Rectangle(
+                        (2 * lambda_val, 0),
+                        (8 * lambda_val, 5 * lambda_val),
+                        layer=layer,
+                    )
+                )
+
+        elif rule_category in ["CONTACT", "POLY_CONTACT"]:
+            layer = LAYER_MAP["CONTACT"][0]
+            if rule_info["type"] == "size":
+                cell.add(
+                    gdspy.Rectangle(
+                        (0, 0),
+                        (violation_value * lambda_val, violation_value * lambda_val),
+                        layer=layer,
+                    )
+                )
+                if rule_category == "CONTACT":
+                    active_layer = LAYER_MAP["ACTIVE"][0]
+                    cell.add(
+                        gdspy.Rectangle(
+                            (-lambda_val, -lambda_val),
+                            (
+                                violation_value * lambda_val + lambda_val,
+                                violation_value * lambda_val + lambda_val,
+                            ),
+                            layer=active_layer,
+                        )
+                    )
+            elif rule_info["type"] == "overlap":
+                active_layer = LAYER_MAP["ACTIVE"][0]
+                contact_size = 2 * lambda_val
+                cell.add(
+                    gdspy.Rectangle((0, 0), (contact_size, contact_size), layer=layer)
+                )
+                cell.add(
+                    gdspy.Rectangle(
+                        (
+                            -violation_value * lambda_val / 2,
+                            -violation_value * lambda_val / 2,
+                        ),
+                        (
+                            contact_size + violation_value * lambda_val / 2,
+                            contact_size + violation_value * lambda_val / 2,
+                        ),
+                        layer=active_layer,
+                    )
+                )
+
+        elif rule_category in ["METAL1", "METAL2", "METAL3"]:
+            layer_map = {
+                "METAL1": LAYER_MAP["METAL1"][0],
+                "METAL2": LAYER_MAP["METAL2"][0],
+                "METAL3": LAYER_MAP["METAL3"][0],
+            }
+            layer = layer_map[rule_category]
+
+            if rule_info["type"] == "width":
+                cell.add(
+                    gdspy.Rectangle(
+                        (0, 0),
+                        (20 * lambda_val, violation_value * lambda_val),
+                        layer=layer,
+                    )
+                )
+            elif rule_info["type"] == "spacing":
+                cell.add(
+                    gdspy.Rectangle(
+                        (0, 0), (10 * lambda_val, 3 * lambda_val), layer=layer
+                    )
+                )
+                cell.add(
+                    gdspy.Rectangle(
+                        (10 * lambda_val + violation_value * lambda_val, 0),
+                        (
+                            20 * lambda_val + violation_value * lambda_val,
+                            3 * lambda_val,
+                        ),
+                        layer=layer,
+                    )
+                )
+            elif rule_info["type"] == "overlap":
+                via_layer = (
+                    LAYER_MAP["VIA"][0]
+                    if rule_category == "METAL1"
+                    else LAYER_MAP["VIA2"][0]
+                )
+                via_size = 2 * lambda_val
+                cell.add(gdspy.Rectangle((0, 0), (via_size, via_size), layer=via_layer))
+                cell.add(
+                    gdspy.Rectangle(
+                        (-violation_value * lambda_val, -violation_value * lambda_val),
+                        (
+                            via_size + violation_value * lambda_val,
+                            via_size + violation_value * lambda_val,
+                        ),
+                        layer=layer,
+                    )
+                )
+    except Exception as e:
+        st.warning(
+            f"Could not generate error cell for {rule_category} {rule_id}: {str(e)}"
+        )
+
+    return cell
+
+
+def qa_generator_app():
+    st.markdown("### 🔍 Pass/Fail Error Cells QA Generator")
+    st.markdown(
+        "Generate GDSII test structures with intentional DRC violations for QA validation"
+    )
+
+    col1, col2 = st.columns([1, 2])
+
+    with col1:
+        st.subheader("Configuration")
+        lambda_val = st.number_input(
+            "Lambda (μm)",
+            min_value=0.1,
+            max_value=10.0,
+            value=0.5,
+            step=0.1,
+            key="qa_lambda",
+        )
+
+        st.markdown("#### Select Rules to Violate")
+
+        selected_errors = []
+        for category, rules in DESIGN_RULES.items():
+            with st.expander(f"{category} Rules"):
+                for rule_id, rule_info in rules.items():
+                    if st.checkbox(
+                        f"{rule_id}: {rule_info['desc']} ({rule_info['value']}λ)",
+                        key=f"chk_{category}_{rule_id}",
+                    ):
+                        selected_errors.append((category, rule_id, rule_info))
+
+        generate_btn = st.button(
+            "Generate Error Cell Library",
+            type="primary",
+            disabled=len(selected_errors) == 0,
+        )
+
+        if generate_btn:
+            with st.spinner("Generating GDSII with intentional DRC errors..."):
+                try:
+                    lib = gdspy.GdsLibrary()
+
+                    # Create top cell
+                    top_cell = lib.new_cell("TOP_QA_ERRORS")
+                    y_offset = 0
+
+                    for category, rule_id, rule_info in selected_errors:
+                        error_cell = create_error_cell(
+                            lib, category, rule_id, rule_info, lambda_val
+                        )
+                        top_cell.add(gdspy.CellReference(error_cell, (0, y_offset)))
+                        y_offset += 50 * lambda_val
+
+                    gds_writer = BytesIO()
+                    lib.write_gds(gds_writer)
+                    st.session_state.generated_gds = gds_writer.getvalue()
+                    st.session_state.selected_errors = selected_errors
+                    st.success(f"Generated {len(selected_errors)} error cells!")
+                except Exception as e:
+                    st.error(f"Error generating GDS: {str(e)}")
+                    st.info("Make sure you have installed: pip install gdspy")
+
+    with col2:
+        st.subheader("Preview & Download")
+
+        if st.session_state.generated_gds:
+            if "selected_errors" in st.session_state:
+                st.markdown("#### Generated Cells Summary")
+                summary_data = []
+                for cat, rid, info in st.session_state.selected_errors:
+                    summary_data.append(
+                        {
+                            "Category": cat,
+                            "Rule": rid,
+                            "Description": info["desc"],
+                            "Nominal": f"{info['value']}λ",
+                            "Violated": f"{info['value'] - 0.5}λ",
+                        }
+                    )
+
+                df = pd.DataFrame(summary_data)
+                st.dataframe(df, use_container_width=True)
+
+            # GDS VIEWER SECTION
+            st.markdown("#### GDS Viewer")
+
+            col_klayout, col_calibre, col_quickview = st.columns(3)
+
+            with col_klayout:
+                if st.button(
+                    "🔍 Open in KLayout", key="btn_klayout", use_container_width=True
+                ):
+                    success, msg = launch_gds_viewer(
+                        "klayout", st.session_state.generated_gds
+                    )
+                    if success:
+                        st.success("KLayout launched successfully!")
+                        st.info(f"File: {st.session_state.gds_filepath}")
+                    else:
+                        st.error(msg)
+                        st.info(
+                            "Make sure KLayout is installed and in your system PATH"
+                        )
+
+            with col_calibre:
+                if st.button(
+                    "📐 Open in CalibreDRV",
+                    key="btn_calibredrv",
+                    use_container_width=True,
+                ):
+                    success, msg = launch_gds_viewer(
+                        "calibredrv", st.session_state.generated_gds
+                    )
+                    if success:
+                        st.success("CalibreDRV launched successfully!")
+                        st.info(f"File: {st.session_state.gds_filepath}")
+                    else:
+                        st.error(msg)
+                        st.info(
+                            "Make sure CalibreDRV is installed and in your system PATH"
+                        )
+
+            with col_quickview:
+                if st.button(
+                    "👁️ Open in QuickView",
+                    key="btn_quickview",
+                    use_container_width=True,
+                ):
+                    success, msg = launch_gds_viewer(
+                        "k2_viewer", st.session_state.generated_gds
+                    )
+                    if success:
+                        st.success("QuickView launched successfully!")
+                        st.info(f"File: {st.session_state.gds_filepath}")
+                    else:
+                        st.error(msg)
+                        st.info(
+                            "Make sure k2_viewer is installed and in your system PATH"
+                        )
+
+            # Alternative download option
+            with st.expander("💾 Download GDS File"):
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                st.download_button(
+                    label="Download QA_Error_Cells.gds",
+                    data=st.session_state.generated_gds,
+                    file_name=f"QA_Error_Cells_{timestamp}.gds",
+                    mime="application/octet-stream",
+                )
+
+            # Info box about local execution
+            st.markdown(
+                """
+            <div class="info-box">
+                <strong>Note:</strong> GDS viewers launch on the <em>server machine</em> where this Streamlit app is running.
+                For cloud deployments, use the Download option instead.
+            </div>
+            """,
+                unsafe_allow_html=True,
+            )
+
+            st.info(
+                "💡 All cells contain intentional DRC violations and should FAIL DRC checks."
+            )
+        else:
+            st.info("Select rules and click 'Generate' to create error cells")
+
+
+# ============== APP 2: CALIBRE DRC DECK GENERATOR ==============
+
+
+def generate_calibre_deck(lambda_val=1.0):
+    """Generate Siemens Calibre DRC rule deck in SVRF format"""
+
+    lines = []
+    lines.append("////////////////////////////////////////////////////////")
+    lines.append("// MOSIS SCMOS SUBM Calibre DRC Rule Deck")
+    lines.append(f"// Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    lines.append(f"// Lambda: {lambda_val} μm")
+    lines.append("////////////////////////////////////////////////////////")
+    lines.append("")
+
+    # Include statements and setup
+    lines.append("LAYOUT SYSTEM GDSII")
+    lines.append("LAYOUT PRIMARY TOP")
+    lines.append("DRC RESULTS DATABASE drc_results.db")
+    lines.append("DRC SUMMARY REPORT drc_summary.rep")
+    lines.append("")
+
+    # Layer definitions
+    lines.append("// Layer Definitions")
+    for layer_name, (gds_num, cif_name) in LAYER_MAP.items():
+        lines.append(f"LAYER {layer_name} {gds_num}")
+    lines.append("")
+
+    # Derived layers
+    lines.append("// Derived Layers")
+    lines.append("gate = POLY AND ACTIVE")
+    lines.append("channel = gate // Simplified")
+    lines.append("")
+
+    # DRC Rules
+    lines.append("////////////////////////////////////////////////////////")
+    lines.append("// Design Rule Checks")
+    lines.append("////////////////////////////////////////////////////////")
+    lines.append("")
+
+    # N_WELL Rules
+    lines.append("// N-WELL Rules")
+    lines.append(f"NW_WIDTH = N_WELL WIDTH < {12 * lambda_val} SERIOUS")
+    lines.append(f"NW_SPACE_SAME = N_WELL SEPARATION < {6 * lambda_val} SERIOUS")
+    lines.append(f"NW_SPACE_DIFF = N_WELL SEPARATION < {18 * lambda_val} SERIOUS")
+    lines.append("")
+
+    # ACTIVE Rules
+    lines.append("// Active Area Rules")
+    lines.append(f"ACT_WIDTH = ACTIVE WIDTH < {3 * lambda_val} SERIOUS")
+    lines.append(f"ACT_SPACE = ACTIVE SEPARATION < {3 * lambda_val} SERIOUS")
+    lines.append(f"ACT_TO_WELL = ACTIVE ENCLOSE N_WELL < {6 * lambda_val} SERIOUS")
+    lines.append("")
+
+    # POLY Rules
+    lines.append("// Poly Rules")
+    lines.append(f"POLY_WIDTH = POLY WIDTH < {2 * lambda_val} SERIOUS")
+    lines.append(f"POLY_SPACE_FIELD = POLY SEPARATION < {3 * lambda_val} SERIOUS")
+    lines.append(f"POLY_EXT_ACT = POLY OVERLAP ACTIVE < {2 * lambda_val} SERIOUS")
+    lines.append(f"ACT_EXT_POLY = ACTIVE OVERLAP POLY < {3 * lambda_val} SERIOUS")
+    lines.append(
+        f"POLY_TO_ACT = (NOT POLY) ENCLOSE ACTIVE EDGE < {1 * lambda_val} SERIOUS"
+    )
+    lines.append("")
+
+    # Select Rules
+    lines.append("// Select Rules")
+    lines.append(
+        f"NSEL_OVER_ACT = N_PLUS_SELECT OVERLAP ACTIVE < {2 * lambda_val} SERIOUS"
+    )
+    lines.append(
+        f"PSEL_OVER_ACT = P_PLUS_SELECT OVERLAP ACTIVE < {2 * lambda_val} SERIOUS"
+    )
+    lines.append(
+        f"SEL_OVER_CONT = N_PLUS_SELECT OVERLAP CONTACT < {1 * lambda_val} SERIOUS"
+    )
+    lines.append("")
+
+    # Contact Rules
+    lines.append("// Contact Rules")
+    lines.append(
+        f"CONT_SIZE = CONTACT AREA != {2 * lambda_val}*{2 * lambda_val} SERIOUS"
+    )
+    lines.append(f"ACT_OVER_CONT = ACTIVE OVERLAP CONTACT < {1.5 * lambda_val} SERIOUS")
+    lines.append(f"CONT_SPACE = CONTACT SEPARATION < {3 * lambda_val} SERIOUS")
+    lines.append(f"CONT_TO_GATE = CONTACT SEPARATION gate < {2 * lambda_val} SERIOUS")
+    lines.append("")
+
+    # Poly Contact Rules
+    lines.append("// Poly Contact Rules")
+    lines.append(
+        f"PCONT_SIZE = POLY_CONTACT AREA != {2 * lambda_val}*{2 * lambda_val} SERIOUS"
+    )
+    lines.append(
+        f"POLY_OVER_CONT = POLY OVERLAP POLY_CONTACT < {1.5 * lambda_val} SERIOUS"
+    )
+    lines.append("")
+
+    # Metal 1 Rules
+    lines.append("// Metal1 Rules")
+    lines.append(f"M1_WIDTH = METAL1 WIDTH < {3 * lambda_val} SERIOUS")
+    lines.append(f"M1_SPACE = METAL1 SEPARATION < {3 * lambda_val} SERIOUS")
+    lines.append(f"M1_OVER_CONT = METAL1 OVERLAP CONTACT < {1 * lambda_val} SERIOUS")
+    lines.append(
+        f"M1_WIDE_SPACE = METAL1 SEPARATION < {6 * lambda_val} AREA > {10 * lambda_val} SERIOUS"
+    )
+    lines.append("")
+
+    # Via Rules
+    lines.append("// Via1 Rules")
+    lines.append(f"VIA_SIZE = VIA AREA != {2 * lambda_val}*{2 * lambda_val} SERIOUS")
+    lines.append(f"VIA_SPACE = VIA SEPARATION < {3 * lambda_val} SERIOUS")
+    lines.append(f"M1_OVER_VIA = METAL1 OVERLAP VIA < {1 * lambda_val} SERIOUS")
+    lines.append("")
+
+    # Metal 2 Rules
+    lines.append("// Metal2 Rules")
+    lines.append(f"M2_WIDTH = METAL2 WIDTH < {3 * lambda_val} SERIOUS")
+    lines.append(f"M2_SPACE = METAL2 SEPARATION < {3 * lambda_val} SERIOUS")
+    lines.append(f"M2_OVER_VIA = METAL2 OVERLAP VIA < {1 * lambda_val} SERIOUS")
+    lines.append("")
+
+    # Via2 Rules
+    lines.append("// Via2 Rules")
+    lines.append(f"VIA2_SIZE = VIA2 AREA != {2 * lambda_val}*{2 * lambda_val} SERIOUS")
+    lines.append(f"VIA2_SPACE = VIA2 SEPARATION < {3 * lambda_val} SERIOUS")
+    lines.append(f"M2_OVER_VIA2 = METAL2 OVERLAP VIA2 < {1 * lambda_val} SERIOUS")
+    lines.append("")
+
+    # Metal 3 Rules
+    lines.append("// Metal3 Rules")
+    lines.append(f"M3_WIDTH = METAL3 WIDTH < {6 * lambda_val} SERIOUS")
+    lines.append(f"M3_SPACE = METAL3 SEPARATION < {3 * lambda_val} SERIOUS")
+    lines.append(f"M3_OVER_VIA2 = METAL3 OVERLAP VIA2 < {1 * lambda_val} SERIOUS")
+    lines.append("")
+
+    # Poly2 Capacitor Rules
+    lines.append("// Poly2 Capacitor Rules")
+    lines.append(f"POLY2_WIDTH = POLY2 WIDTH < {5 * lambda_val} SERIOUS")
+    lines.append(f"POLY2_SPACE = POLY2 SEPARATION < {3 * lambda_val} SERIOUS")
+    lines.append(f"POLY_OVER_POLY2 = POLY OVERLAP POLY2 < {2 * lambda_val} SERIOUS")
+    lines.append("")
+
+    # Output summary
+    lines.append("// Check Summary")
+    lines.append("DRC CHECK MAP NW_WIDTH ")
+    lines.append("DRC CHECK MAP NW_SPACE_SAME")
+    lines.append("DRC CHECK MAP NW_SPACE_DIFF")
+    lines.append("DRC CHECK MAP ACT_WIDTH")
+    lines.append("DRC CHECK MAP M1_WIDTH")
+    lines.append("DRC CHECK MAP M2_WIDTH")
+    lines.append("DRC CHECK MAP POLY_WIDTH")
+
+    return "\n".join(lines)
+
+
+def calibre_generator_app():
+    st.markdown("### 📜 Siemens Calibre DRC Rule Deck Generator")
+    st.markdown("Generate SVRF format DRC rule decks from MOSIS SCMOS design rules")
+
+    col1, col2 = st.columns([1, 2])
+
+    with col1:
+        st.subheader("Configuration")
+        lambda_val = st.number_input(
+            "Process Lambda (μm)",
+            min_value=0.1,
+            max_value=10.0,
+            value=0.5,
+            step=0.1,
+            key="cal_lambda",
+        )
+
+        st.markdown("#### Rule Categories")
+        include_all = st.checkbox("Include All Rules", value=True)
+
+        categories = []
+        if include_all:
+            categories = list(DESIGN_RULES.keys())
+            st.info("All categories selected")
+        else:
+            for cat in DESIGN_RULES.keys():
+                if st.checkbox(cat, value=True, key=f"cat_{cat}"):
+                    categories.append(cat)
+
+        if st.button("Generate Calibre Deck", type="primary"):
+            with st.spinner("Generating SVRF rule deck..."):
+                deck_content = generate_calibre_deck(lambda_val)
+                st.session_state.calibre_deck = deck_content
+                st.success("Rule deck generated successfully!")
+
+    with col2:
+        st.subheader("Generated Rule Deck")
+
+        if st.session_state.calibre_deck:
+            st.code(st.session_state.calibre_deck, language="text")
+
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            st.download_button(
+                label="📥 Download Calibre DRC Deck (.svrf)",
+                data=st.session_state.calibre_deck,
+                file_name=f"mosis_scmos_drc_{timestamp}.svrf",
+                mime="text/plain",
+            )
+
+            st.markdown("#### Validation Checklist")
+            st.markdown("""
+            - [ ] Verify layer numbers match your PDK
+            - [ ] Check lambda scaling for your process node
+            - [ ] Review SERIOUS vs WARNING error classifications
+            - [ ] Validate derived layer operations
+            """)
+        else:
+            st.info("Configure parameters and click 'Generate' to create rule deck")
+
+            with st.expander("Preview SVRF Format"):
+                example = """
+LAYER N_WELL 42
+LAYER ACTIVE 43
+LAYER POLY 46
+
+NW_WIDTH = N_WELL WIDTH < 6 SERIOUS
+ACT_SPACE = ACTIVE SEPARATION < 1.5 SERIOUS
+                """
+                st.code(example, language="text")
+
+
+# ============== MAIN APP ==============
+
+
+def main():
+    st.markdown(
+        '<div class="main-header">🔧 MOSIS PDK Automation System</div>',
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        '<div style="text-align: center; color: #666; margin-bottom: 2rem;">SCMOS SUBM Technology - 3-Metal Process Support</div>',
+        unsafe_allow_html=True,
+    )
+
+    # Navigation
+    app_mode = st.sidebar.radio(
+        "Select Application",
+        [
+            "QA Error Cell Generator",
+            "Calibre DRC Deck Generator",
+            "Layer Map Reference",
+        ],
+    )
+
+    if app_mode == "QA Error Cell Generator":
+        qa_generator_app()
+    elif app_mode == "Calibre DRC Deck Generator":
+        calibre_generator_app()
+    else:
+        st.markdown("### 📚 SCMOS SUBM Layer Reference")
+
+        layer_data = []
+        for name, (gds, cif) in LAYER_MAP.items():
+            layer_data.append(
+                {
+                    "Layer Name": name,
+                    "GDS Number": gds,
+                    "CIF Name": cif,
+                    "Datatype": "0",
+                }
+            )
+
+        df = pd.DataFrame(layer_data)
+        st.dataframe(df, use_container_width=True)
+
+        st.markdown("### Technology Notes")
+        st.markdown("""
+        - **SCN3ME_SUBM**: Scalable CMOS N-well, 3-metal, sub-micron rules
+        - **Grid**: All geometry must be on 0.5 lambda grid
+        - **Units**: All dimensions in microns, scaled by lambda
+        - **Contacts**: Must be orthogonal (non-Manhattan geometry not allowed)
+        """)
+
+
+if __name__ == "__main__":
+    main()
